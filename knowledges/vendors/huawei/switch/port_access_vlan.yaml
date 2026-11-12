@@ -1,0 +1,14 @@
+entity_id: port_access_vlan
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+pre_commands:
+  - "port link-type access"
+command: "port default vlan {vlan_id}"
+view: interface
+verified: true
+sources:
+  - "华为通用语法，port default vlan 为 access 端口划 VLAN 的标准命令"

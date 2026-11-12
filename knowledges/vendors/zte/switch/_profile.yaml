@@ -1,0 +1,12 @@
+vendor: zte
+device_type: switch
+
+# 退出当前视图 / 回到用户视图
+view_exit: quit
+view_return: return
+
+# 中兴 ZXR10 默认按需显式退出视图
+allow_direct_view_switch: false
+
+# 配置末尾自动逐层退出并回到用户视图
+auto_close_views: true

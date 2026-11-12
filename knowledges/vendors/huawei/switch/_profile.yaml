@@ -1,0 +1,12 @@
+vendor: huawei
+device_type: switch
+
+# 退出当前视图 / 回到用户视图
+view_exit: quit
+view_return: return
+
+# 华为 VRP 不允许从接口视图内直接切换到另一个接口视图
+allow_direct_view_switch: false
+
+# 配置末尾自动逐层退出并回到用户视图
+auto_close_views: true

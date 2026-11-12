@@ -1,0 +1,15 @@
+entity_id: port_trunk_vlan
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+pre_commands:
+  - "port link-type trunk"
+command: "port trunk permit vlan {vlan_list}"
+view: interface
+verified: true
+sources:
+  - "H3C Comware V7 Trunk 命令：port trunk permit vlan"
+  - "S6800 手册示例：port trunk permit vlan 30 40"

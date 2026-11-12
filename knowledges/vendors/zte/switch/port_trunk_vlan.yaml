@@ -1,0 +1,17 @@
+entity_id: port_trunk_vlan
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+pre_commands:
+  - "switchport mode trunk"
+command: "switchport trunk vlan {vlan_list}"
+view: interface
+verified: false
+warnings:
+  - "中兴 Trunk 放行命令为 switchport trunk vlan，而非 allow-pass 或 permit"
+sources:
+  - "ZXR10 手册：switchport trunk vlan <vlan-list> 将 Trunk 端口加入指定 VLAN"
+  - "示例：switchport mode trunk + switchport trunk vlan 98"

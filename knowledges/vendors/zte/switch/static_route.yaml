@@ -1,0 +1,15 @@
+entity_id: static_route
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+command: "ip route {prefix} {mask} {next_hop}"
+view: system-view
+verified: false
+warnings:
+  - "中兴使用 ip route，而非 ip route-static"
+sources:
+  - "ZXR10 手册：ip route <prefix> <net-mask> <forwarding-router's-address>"
+  - "示例：ip route 192.168.5.0 255.255.255.0 192.168.4.2"

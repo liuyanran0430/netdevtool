@@ -1,0 +1,17 @@
+entity_id: port_access_vlan
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+pre_commands:
+  - "switchport mode access"
+command: "switchport access vlan {vlan_id}"
+view: interface
+verified: false
+warnings:
+  - "中兴公开手册版本与 V6.00.03.94 可能存在细微差异，建议在现网设备上以 '?' 补全核实"
+sources:
+  - "ZXR10 手册：switchport access vlan 设置端口所属 VLAN"
+  - "中兴交换机常用命令：switchport mode access + switchport access vlan"

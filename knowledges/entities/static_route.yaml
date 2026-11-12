@@ -1,0 +1,20 @@
+id: static_route
+domain: routing
+description: "配置 IPv4 静态路由"
+view_path: ["system-view"]
+parameters:
+  prefix:
+    type: string
+    format: ipv4
+    required: true
+    note: "目的网络地址"
+  mask:
+    type: string
+    format: ipv4_mask
+    required: true
+  next_hop:
+    type: string
+    required: true
+    note: "下一跳 IP 地址，或出接口"
+semantic_notes:
+  - "华为/华三使用 ip route-static；中兴使用 ip route"

@@ -1,0 +1,12 @@
+entity_id: static_route
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "ip route-static {prefix} {mask} {next_hop}"
+view: system-view
+verified: true
+sources:
+  - "H3C Comware V7 静态路由标准语法"

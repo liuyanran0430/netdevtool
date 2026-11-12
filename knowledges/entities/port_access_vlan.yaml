@@ -1,0 +1,15 @@
+id: port_access_vlan
+domain: vlan
+description: "将接口配置为 access 模式并划入指定 VLAN"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+    note: "接口命名各厂商不同（如华为10GE1/0/1、华三Ten-GigabitEthernet1/0/1、中兴gei_1/1）"
+  vlan_id:
+    type: int
+    range: [1, 4094]
+    required: true
+semantic_notes:
+  - "华为端口默认 hybrid，需显式 link-type access；华三/中兴通常需显式设置模式"
