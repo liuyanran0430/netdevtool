@@ -13,10 +13,12 @@ from app.repositories.device_repository import DeviceRepository
 from app.repositories.translation_repository import TranslationRepository
 from app.schemas import (
     TranslationCreate,
+    TranslationEntityInfo,
     TranslationOut,
     TranslationResult,
     TranslationResultLine,
     TranslationResultSummary,
+    TranslationWarning,
 )
 from app.translate_rule import get_registry, translate_config
 
@@ -138,20 +140,52 @@ def _translate(db: Session, task: TranslationTask) -> TranslationResult:
             f"未找到目标设备档案：{task.target_vendor} {task.target_model}"
         )
 
+    registry = get_registry()
     output = translate_config(
         task.source_text,
         source_vendor=_vendor_key(source_device),
         source_device_type=source_device.device_type.value,
         target_vendor=_vendor_key(target_device),
         target_device_type=target_device.device_type.value,
-        registry=get_registry(),
+        registry=registry,
     )
+
+    entity_ids: list[str] = []
+    for line in output.lines:
+        if line.entity_id and line.entity_id not in entity_ids:
+            entity_ids.append(line.entity_id)
+
+    entities: list[TranslationEntityInfo] = []
+    for entity_id in entity_ids:
+        spec = registry.get_entity(entity_id)
+        entities.append(
+            TranslationEntityInfo(
+                id=entity_id,
+                description=spec.description if spec else None,
+            )
+        )
 
     return TranslationResult(
         lines=[
-            TranslationResultLine(no=line.no, text=line.text, tone=line.tone)
+            TranslationResultLine(
+                no=line.no,
+                text=line.text,
+                tone=line.tone,
+                source_no=line.source_no,
+                entity_id=line.entity_id,
+            )
             for line in output.lines
         ],
+        warnings=[
+            TranslationWarning(
+                no=warning.no,
+                message=warning.message,
+                code=warning.code,
+                severity=warning.severity,
+            )
+            for warning in output.warnings
+        ],
+        entities=entities,
         summary=TranslationResultSummary(
             total=output.summary["total"],
             duration_ms=output.summary["duration_ms"],

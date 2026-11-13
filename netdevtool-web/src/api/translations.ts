@@ -1,7 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8083'
+import { API_BASE, toRequestError } from './client'
 
 export type TranslationStatus = 'pending' | 'running' | 'succeeded' | 'failed'
-export type TranslationTone = 'focus' | 'success' | 'warn' | 'muted'
+export type TranslationTone = 'focus' | 'success' | 'warn' | 'error' | 'muted'
 
 export interface TranslationCreateInput {
   source_text: string
@@ -15,10 +15,28 @@ export interface TranslationResultLine {
   no: number
   text: string
   tone: TranslationTone
+  source_no: number | null
+  entity_id?: string | null
+}
+
+export interface TranslationWarning {
+  /** 源配置行号 */
+  no: number
+  message: string
+  /** 告警类型，用于前端聚合展示 */
+  code: string
+  severity: 'warn' | 'error'
+}
+
+export interface TranslationEntityInfo {
+  id: string
+  description: string | null
 }
 
 export interface TranslationResult {
   lines: TranslationResultLine[]
+  warnings?: TranslationWarning[]
+  entities?: TranslationEntityInfo[]
   summary: {
     total: number
     duration_ms: number
@@ -32,12 +50,6 @@ export interface TranslationTask {
   error?: string | null
 }
 
-async function ensureOk(response: Response): Promise<void> {
-  if (response.ok) return
-  const body = (await response.json().catch(() => null)) as { message?: string } | null
-  throw new Error(body?.message ?? `请求失败：${response.status}`)
-}
-
 export async function createTranslation(
   input: TranslationCreateInput,
 ): Promise<Pick<TranslationTask, 'request_id' | 'status'>> {
@@ -46,19 +58,12 @@ export async function createTranslation(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  await ensureOk(response)
+  if (!response.ok) throw await toRequestError(response, '创建翻译任务失败')
   return (await response.json()) as Pick<TranslationTask, 'request_id' | 'status'>
 }
 
 export async function getTranslation(requestId: string): Promise<TranslationTask> {
   const response = await fetch(`${API_BASE}/api/v1/translations/${requestId}`)
-  await ensureOk(response)
+  if (!response.ok) throw await toRequestError(response, '查询翻译任务失败')
   return (await response.json()) as TranslationTask
-}
-
-export async function cancelTranslation(requestId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/v1/translations/${requestId}`, {
-    method: 'DELETE',
-  })
-  await ensureOk(response)
 }

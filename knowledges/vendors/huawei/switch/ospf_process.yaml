@@ -1,0 +1,16 @@
+entity_id: ospf_process
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+command: "ospf {process_id} router-id {router_id}"
+sub_commands:
+  - "router-id {router_id}"
+view: system-view
+verified: true
+warnings:
+  - "源配置若只创建进程未配置 router-id（ospf <pid>），该行不会被识别，需人工补充"
+sources:
+  - "华为 VRP OSPF 配置：ospf process-id router-id router-id"

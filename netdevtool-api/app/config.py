@@ -35,14 +35,14 @@ class Settings(BaseSettings):
     # 知识库目录，留空时使用项目根下的 knowledges
     KNOWLEDGE_BASE_DIR: str = ""
 
-    # 跨域（逗号分隔）
-    CORS_ORIGINS: str = "http://localhost:5175,http://127.0.0.1:5175"
-
-    # 大模型（供 app/llm 使用）
+    # 大模型（app/llm 使用）
     LLM_PROVIDER: str = "openai"
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
+
+    # 跨域（逗号分隔）
+    CORS_ORIGINS: str = "http://localhost:5175,http://127.0.0.1:5175"
 
     @property
     def database_url(self) -> str:

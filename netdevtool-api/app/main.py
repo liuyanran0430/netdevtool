@@ -1,7 +1,7 @@
 """应用入口。
 
 OpenAPI 契约：/openapi.json（Swagger UI: /docs，ReDoc: /redoc）
-前端接口类型统一由 OpenAPI 生成，避免手工维护。
+修改接口后执行 script/export_openapi.py 刷新契约文件，前端类型以其为准手工同步。
 """
 
 from fastapi import FastAPI, Request

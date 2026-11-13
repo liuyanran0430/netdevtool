@@ -1,0 +1,14 @@
+entity_id: vlan_batch_create
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+command: "vlan {vlan_ids}"
+param_formats:
+  vlan_ids: hyphen
+view: system-view
+verified: true
+sources:
+  - "ZXR10 批量创建 VLAN：vlan 100-200（范围）或 vlan 10,20（列表）"

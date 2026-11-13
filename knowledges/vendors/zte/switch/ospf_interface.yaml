@@ -1,0 +1,15 @@
+entity_id: ospf_interface
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+command: "ip ospf enable {process_id} area {area_id}"
+view: interface
+verified: true
+warnings:
+  - "ZXR10 接口使能 OSPF 的命令形式需现场核对（部分版本为 ip ospf process-id area area-id）"
+  - "接口名未做厂商映射，需确认目标设备实际接口命名"
+sources:
+  - "ZXR10 交换机 OSPF 配置：接口视图下 ip ospf enable process-id area area-id"

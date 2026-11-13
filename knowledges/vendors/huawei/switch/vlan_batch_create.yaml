@@ -1,0 +1,14 @@
+entity_id: vlan_batch_create
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+command: "vlan batch {vlan_ids}"
+param_formats:
+  vlan_ids: to
+view: system-view
+verified: true
+sources:
+  - "华为 VRP：vlan batch { vlan-id1 [ to vlan-id2 ] } &<1-10>"

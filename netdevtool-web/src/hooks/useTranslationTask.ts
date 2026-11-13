@@ -61,6 +61,78 @@ export function useTranslationTask() {
     setState(INITIAL_STATE)
   }, [clearTimer])
 
+  /** 轮询任务状态；`silentFailure` 用于恢复历史任务时避免误报错误。 */
+  const poll = useCallback(
+    (requestId: string, run: number, immediate: boolean, silentFailure: boolean) => {
+      const deadline = Date.now() + POLL_TIMEOUT_MS
+      let firstAttempt = true
+
+      const tick = async () => {
+        if (run !== runRef.current) return
+        try {
+          const current = await getTranslation(requestId)
+          if (run !== runRef.current) return
+
+          if (current.status === 'succeeded') {
+            if (!current.result) throw new Error('后端未返回翻译结果')
+            setState({
+              status: 'succeeded',
+              requestId,
+              result: current.result,
+              error: null,
+            })
+            return
+          }
+          if (current.status === 'failed') {
+            setState({
+              status: 'failed',
+              requestId,
+              result: null,
+              error: current.error ?? '翻译任务执行失败',
+            })
+            return
+          }
+
+          setState({
+            status: current.status,
+            requestId,
+            result: null,
+            error: null,
+          })
+          if (Date.now() >= deadline) {
+            setState({
+              status: 'failed',
+              requestId,
+              result: null,
+              error: '翻译超时，请稍后重试',
+            })
+            return
+          }
+          firstAttempt = false
+          timerRef.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS)
+        } catch (error) {
+          if (run !== runRef.current) return
+          if (silentFailure && firstAttempt) {
+            // 恢复的历史任务已被清理：静默回到未生成状态
+            setSubmittedSignature(null)
+            setState(INITIAL_STATE)
+            return
+          }
+          setState({
+            status: 'failed',
+            requestId,
+            result: null,
+            error: getErrorMessage(error),
+          })
+        }
+      }
+
+      if (immediate) void tick()
+      else timerRef.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS)
+    },
+    [],
+  )
+
   const start = useCallback(
     async (input: TranslationCreateInput) => {
       runRef.current += 1
@@ -78,68 +150,26 @@ export function useTranslationTask() {
           result: null,
           error: null,
         })
-
-        const deadline = Date.now() + POLL_TIMEOUT_MS
-        const poll = async () => {
-          if (run !== runRef.current) return
-          try {
-            const current = await getTranslation(created.request_id)
-            if (run !== runRef.current) return
-
-            if (current.status === 'succeeded') {
-              if (!current.result) throw new Error('后端未返回翻译结果')
-              setState({
-                status: 'succeeded',
-                requestId: created.request_id,
-                result: current.result,
-                error: null,
-              })
-              return
-            }
-            if (current.status === 'failed') {
-              setState({
-                status: 'failed',
-                requestId: created.request_id,
-                result: null,
-                error: current.error ?? '翻译任务执行失败',
-              })
-              return
-            }
-
-            setState({
-              status: current.status,
-              requestId: created.request_id,
-              result: null,
-              error: null,
-            })
-            if (Date.now() >= deadline) {
-              setState({
-                status: 'failed',
-                requestId: created.request_id,
-                result: null,
-                error: '翻译超时，请稍后重试',
-              })
-              return
-            }
-            timerRef.current = window.setTimeout(() => void poll(), POLL_INTERVAL_MS)
-          } catch (error) {
-            if (run !== runRef.current) return
-            setState({
-              status: 'failed',
-              requestId: created.request_id,
-              result: null,
-              error: getErrorMessage(error),
-            })
-          }
-        }
-
-        timerRef.current = window.setTimeout(() => void poll(), POLL_INTERVAL_MS)
+        poll(created.request_id, run, false, false)
       } catch (error) {
         if (run !== runRef.current) return
         setState({ ...INITIAL_STATE, status: 'failed', error: getErrorMessage(error) })
       }
     },
-    [clearTimer],
+    [clearTimer, poll],
+  )
+
+  /** 页面重新挂载时，按已保存的 requestId 继续拉取结果。 */
+  const resume = useCallback(
+    (requestId: string, signature: string) => {
+      runRef.current += 1
+      const run = runRef.current
+      clearTimer()
+      setSubmittedSignature(signature)
+      setState({ status: 'running', requestId, result: null, error: null })
+      poll(requestId, run, true, true)
+    },
+    [clearTimer, poll],
   )
 
   useEffect(
@@ -150,5 +180,5 @@ export function useTranslationTask() {
     [clearTimer],
   )
 
-  return { ...state, submittedSignature, start, reset }
+  return { ...state, submittedSignature, start, resume, reset }
 }

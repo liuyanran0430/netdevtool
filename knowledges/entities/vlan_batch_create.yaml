@@ -1,0 +1,14 @@
+id: vlan_batch_create
+domain: vlan
+description: "批量创建 VLAN 或创建 VLAN 范围"
+view_path: ["system-view"]
+parameters:
+  vlan_ids:
+    type: string
+    format: vlan_list
+    required: true
+    pattern: '\d+(?:\s*[-,]\s*\d+|\s+to\s+\d+|\s+\d+)+'
+    note: "VLAN 列表或范围，如 '10 to 20'、'10 20 30'、'100-200'、'10,20'"
+semantic_notes:
+  - "各厂商批量创建 VLAN 的关键字不同：华为 vlan batch，华三/中兴 vlan"
+  - "VLAN 范围分隔符不同：华为/华三用 to，中兴用 - 与 ,"

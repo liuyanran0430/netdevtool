@@ -1,0 +1,24 @@
+id: ospf_area_network
+domain: routing
+description: "在指定 OSPF 区域内宣告网络"
+view_path: ["system-view", "ospf {process_id}", "area {area_id}"]
+parameters:
+  process_id:
+    type: int
+    required: true
+  area_id:
+    type: string
+    required: true
+    note: "区域 ID，可以是整数或点分十进制格式；骨干区域为 0 或 0.0.0.0"
+  network:
+    type: string
+    required: true
+    note: "网络地址，通常配合反掩码（wildcard mask）使用"
+  wildcard_mask:
+    type: string
+    required: true
+    note: "反掩码，例如 0.0.0.255 对应 /24 网段"
+semantic_notes:
+  - "华为/华三的结构是先进入 area 视图，再写 network <ip> <wildcard>；这是两者共有的视图层级设计"
+  - "OSPF 进程号两端可以不同，但区域 ID 必须匹配才能建立邻居"
+  - "如果接口地址落在 network 宣告的范围内，该接口会自动参与 OSPF"

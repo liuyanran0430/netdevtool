@@ -4,7 +4,6 @@ export interface ReviewCandidate {
   command: string
   source: string
   similarity: string
-  confidence: 'low' | 'medium' | 'high'
   candidateVendor: string
   candidateCommand: string
   view: string
@@ -21,7 +20,6 @@ export const reviewCandidates: ReviewCandidate[] = [
     command: 'stp edged-port enable',
     source: 'LLM',
     similarity: '0.82',
-    confidence: 'low',
     candidateVendor: '华三',
     candidateCommand: 'stp edged-port',
     view: 'interface',
@@ -36,7 +34,6 @@ export const reviewCandidates: ReviewCandidate[] = [
     command: 'port trunk allow-pass vlan 10 20',
     source: 'LLM',
     similarity: '0.78',
-    confidence: 'low',
     candidateVendor: '华三',
     candidateCommand: 'port trunk permit vlan 10 20',
     view: 'interface',
@@ -51,7 +48,6 @@ export const reviewCandidates: ReviewCandidate[] = [
     command: 'undo info-center enable',
     source: 'LLM',
     similarity: '0.74',
-    confidence: 'low',
     candidateVendor: '华三',
     candidateCommand: 'undo info-center enable',
     view: 'system-view',

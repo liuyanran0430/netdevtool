@@ -1,0 +1,17 @@
+id: ospf_interface
+domain: routing
+description: "在接口上直接使能 OSPF 并指定区域（替代 network 宣告方式）"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+  process_id:
+    type: int
+    required: true
+  area_id:
+    type: string
+    required: true
+semantic_notes:
+  - "部分厂商支持在接口视图下使用 ip ospf <process-id> area <area-id> 直接使能 OSPF，无需在 OSPF 进程内做 network 宣告"
+  - "这种方式的视图路径与 network 宣告完全不同，翻译引擎需要识别源配置使用的是哪一种模式"

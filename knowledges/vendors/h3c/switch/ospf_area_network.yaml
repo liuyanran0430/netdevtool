@@ -1,0 +1,12 @@
+entity_id: ospf_area_network
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "network {network} {wildcard_mask}"
+view: area
+verified: true
+sources:
+  - "H3C Comware V7：OSPF 区域视图下 network ip-address wildcard-mask"

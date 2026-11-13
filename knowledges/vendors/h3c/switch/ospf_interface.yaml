@@ -1,0 +1,14 @@
+entity_id: ospf_interface
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "ospf {process_id} area {area_id}"
+view: interface
+verified: true
+warnings:
+  - "接口名未做厂商映射，需确认目标设备实际接口命名"
+sources:
+  - "H3C Comware V7：接口视图下 ospf process-id area area-id 使能 OSPF"

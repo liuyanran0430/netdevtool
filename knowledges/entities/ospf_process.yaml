@@ -1,0 +1,17 @@
+id: ospf_process
+domain: routing
+description: "启动 OSPF 进程并配置 Router ID"
+view_path: ["system-view"]
+parameters:
+  process_id:
+    type: int
+    range: [1, 65535]
+    required: true
+    note: "OSPF 进程号，仅本地有效，两端设备可以使用不同的进程号"
+  router_id:
+    type: string
+    required: false
+    note: "格式为 IPv4 地址，建议使用 Loopback 接口地址以保证稳定性；不配置时系统可能自动选举"
+semantic_notes:
+  - "华为/华三的典型命令为 ospf <process-id> router-id <id>，中兴的命令结构类似但具体关键字需以设备为准"
+  - "OSPF 进程的创建和 Router ID 配置在不同厂商中可能分属不同的子视图"

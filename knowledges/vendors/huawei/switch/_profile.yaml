@@ -5,6 +5,9 @@ device_type: switch
 view_exit: quit
 view_return: return
 
+# 配置删除前缀
+negation_prefix: undo
+
 # 华为 VRP 不允许从接口视图内直接切换到另一个接口视图
 allow_direct_view_switch: false
 

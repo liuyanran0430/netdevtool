@@ -1,0 +1,15 @@
+entity_id: vlan_creation
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+command: "vlan {vlan_id}"
+view: system-view
+verified: false
+warnings:
+  - "ZXR10 全局配置下使用 vlan vlan-id 创建 VLAN，需现场核对本机版本是否一致"
+  - "VLAN 名称需进入 VLAN 视图单独配置，当前仅翻译创建命令"
+sources:
+  - "ZXR10 交换机 VLAN 配置：全局配置模式下 vlan vlan-id"

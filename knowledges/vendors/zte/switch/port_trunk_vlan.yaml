@@ -4,14 +4,16 @@ device_type: switch
 product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
-confidence: medium
+confidence: high
 pre_commands:
   - "switchport mode trunk"
 command: "switchport trunk vlan {vlan_list}"
+param_formats:
+  vlan_list: hyphen
 view: interface
-verified: false
+verified: true
 warnings:
-  - "中兴 Trunk 放行命令为 switchport trunk vlan，而非 allow-pass 或 permit"
+  - "ZTE VLAN 列表使用逗号与短横线表示（如 '10,20'、'100-200'），翻译时会自动将 'to' 写法转换为短横线"
 sources:
-  - "ZXR10 手册：switchport trunk vlan <vlan-list> 将 Trunk 端口加入指定 VLAN"
-  - "示例：switchport mode trunk + switchport trunk vlan 98"
+  - "ZXR10 5960X 配置指导 V6.00.03.94 §2.4.3 (配置SwitchVLAN)"
+  - "ZXR10 5960X 配置指导 V6.00.03.94 §7.1.3.1 (静态隧道方式VXLAN二层转发配置实例)"

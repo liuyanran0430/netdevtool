@@ -4,12 +4,12 @@ device_type: switch
 product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
-confidence: medium
+confidence: high
 command: "ip route {prefix} {mask} {next_hop}"
 view: system-view
-verified: false
+verified: true
 warnings:
-  - "中兴使用 ip route，而非 ip route-static"
+  - "ZTE 配置具体静态路由严格使用 'ip route'，不存在 'ip route-static' 别名。"
 sources:
-  - "ZXR10 手册：ip route <prefix> <net-mask> <forwarding-router's-address>"
-  - "示例：ip route 192.168.5.0 255.255.255.0 192.168.4.2"
+  - "ZXR10 5960X 配置指导 V6.00.03.94 §4.1.1 (配置静态路由)"
+  - "ZXR10 5960X 配置指导 V6.00.03.94 §4.1.2.5 (IPv4公网静态路由FRR配置实例)"

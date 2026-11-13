@@ -13,7 +13,3 @@ def list_devices(
     device_type: DeviceType | None,
 ) -> list[Device]:
     return DeviceRepository(db).list_devices(vendor=vendor, device_type=device_type)
-
-
-def list_device_types(db: Session) -> list[DeviceType]:
-    return DeviceRepository(db).list_device_types()

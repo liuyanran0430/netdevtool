@@ -1,10 +1,4 @@
-"""知识库驱动的配置翻译：加载、解析、渲染的纯单元入口。
-
-当前不接入 Celery 与数据库，供规则验证与单元测试使用。
-"""
-
-import time
-from pathlib import Path
+"""知识库驱动的配置翻译：加载、解析、渲染的纯单元入口。"""
 
 from app.translate_rule.loader import KnowledgeLoadError, LoadResult, load_knowledge
 from app.translate_rule.models import (
@@ -63,9 +57,7 @@ def translate_config(
 ) -> TranslationOutput:
     """按知识库把源配置翻译为目标厂商配置。"""
     active_registry = registry or get_registry()
-    started = time.perf_counter()
     parsed_lines = SourceParser(active_registry, source_vendor, source_device_type).parse(source_text)
-    duration_ms = int((time.perf_counter() - started) * 1000)
     renderer = Renderer(
         active_registry,
         target_vendor,
@@ -73,4 +65,4 @@ def translate_config(
         source_vendor=source_vendor,
         source_device_type=source_device_type,
     )
-    return renderer.render(parsed_lines, duration_ms=duration_ms)
+    return renderer.render(parsed_lines)

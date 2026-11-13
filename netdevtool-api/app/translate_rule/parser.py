@@ -14,7 +14,7 @@ from app.translate_rule.models import (
 from app.translate_rule.registry import KnowledgeRegistry
 
 IPV4_PATTERN = r"\d{1,3}(?:\.\d{1,3}){3}"
-VLAN_LIST_PATTERN = r"\d+(?:\s+(?:to\s+\d+|,?\s*\d+))*"
+VLAN_LIST_PATTERN = r"\d+(?:(?:\s*[-,]\s*|\s+)\d+)*(?:\s+to\s+\d+(?:\s+\d+)*)?"
 
 VIEW_EXIT_COMMANDS = {"quit", "exit"}
 VIEW_TOP_COMMANDS = {"return", "end"}
@@ -52,6 +52,7 @@ class ParsedEntity:
     entity_id: str
     params: dict[str, str]
     view: str | None
+    negative: bool = False
 
 
 @dataclass
@@ -62,10 +63,14 @@ class ParsedLine:
     text: str
     kind: str  # blank / comment / view / pre / command / other
     entity: ParsedEntity | None = None
+    # 视图类型 -> 进入该视图的源行号，供渲染器把生成行映射回源配置
+    view_nos: dict[str, int] | None = None
 
 
-def compile_template(template: str, parameters: dict[str, ParameterSpec]) -> CompiledTemplate:
-    """把命令模板编译为带命名分组的正则。"""
+def compile_template(
+    template: str, parameters: dict[str, ParameterSpec], *, prefix: bool = False
+) -> CompiledTemplate:
+    """把命令模板编译为带命名分组的正则。`prefix=True` 时允许匹配行首片段。"""
     tokens = template.split()
     if not tokens:
         raise ValueError("模板不能为空")
@@ -75,12 +80,16 @@ def compile_template(template: str, parameters: dict[str, ParameterSpec]) -> Com
     literal_length = 0
     for index, token in enumerate(tokens):
         token_pattern, token_literal = _compile_token(
-            token, parameters, names, index == len(tokens) - 1
+            token,
+            parameters,
+            names,
+            index == len(tokens) - 1 and not prefix,
         )
         pieces.append(token_pattern)
         literal_length += token_literal
 
-    pattern = re.compile(r"^\s*" + r"\s+".join(pieces) + r"\s*$", re.IGNORECASE)
+    suffix = r"(?:\s+.*)?$" if prefix else r"\s*$"
+    pattern = re.compile(r"^\s*" + r"\s+".join(pieces) + suffix, re.IGNORECASE)
     first = tokens[0]
     bucket = "" if PLACEHOLDER_RE.search(first) else first.lower()
     return CompiledTemplate(template, pattern, tuple(names), literal_length, bucket)
@@ -143,13 +152,28 @@ class SourceParser:
     def __init__(self, registry: KnowledgeRegistry, vendor: str, device_type: str) -> None:
         self._entities = registry.entities
         implementations = registry.implementations_for(vendor, device_type)
+        self._implementations = implementations
+        self._negation_prefix = registry.get_profile(vendor, device_type).negation_prefix
+        self._view_types: dict[str, str] = {}
+        self._view_prefix_matchers: list[CompiledTemplate] = []
+        self._sub_matchers: list[SourceMatcher] = []
+        for impl in implementations:
+            spec = self._entities.get(impl.entity_id)
+            if spec is None:
+                continue
+            for template in impl.sub_commands:
+                if template:
+                    self._sub_matchers.append(
+                        SourceMatcher(impl, compile_template(template, spec.parameters))
+                    )
+        self._sub_matchers.sort(key=lambda item: -item.template.literal_length)
         self._command_matchers = self._build_matchers(implementations, with_command=True)
         self._pre_matchers = self._build_matchers(implementations, with_command=False)
         self._view_matchers = self._build_view_matchers()
 
     def parse(self, text: str) -> list[ParsedLine]:
         parsed: list[ParsedLine] = []
-        view_stack: list[tuple[str, dict[str, str]]] = []
+        view_stack: list[tuple[str, dict[str, str], int]] = []
         pending: set[str] = set()
 
         for number, raw in enumerate(text.splitlines(), start=1):
@@ -158,6 +182,10 @@ class SourceParser:
                 parsed.append(ParsedLine(number, raw, "blank"))
                 continue
             if stripped.startswith("#") or stripped.startswith("!"):
+                if stripped in {"#", "!"}:
+                    # 单独的分节符表示配置块结束，回到系统视图
+                    view_stack[:] = [("system-view", {}, -1)]
+                    pending.clear()
                 parsed.append(ParsedLine(number, raw, "comment"))
                 continue
 
@@ -174,30 +202,68 @@ class SourceParser:
                 parsed.append(ParsedLine(number, raw, "view"))
                 continue
 
+            context: dict[str, str] = {}
+            for _, params, _ in view_stack:
+                context.update(params)
+            current_view = view_stack[-1][0] if view_stack else None
+            # 配置导出通常不带 system-view，起始行按根视图处理
+            current_type = (
+                self._view_type_of(current_view) if current_view else "system-view"
+            )
+
+            # 否定语义（undo / no）只按当前视图匹配实体，不参与视图进入判断
+            body = stripped
+            negative = False
+            prefix = self._negation_prefix.lower()
+            if prefix and lowered.startswith(prefix + " "):
+                negative = True
+                body = stripped[len(prefix) + 1 :].strip()
+                command = self._match(self._command_matchers, body, current_type, pending or None)
+                if command is not None:
+                    params = {**context, **command.template.match(body)}
+                    pending.clear()
+                    parsed.append(
+                        ParsedLine(
+                            number,
+                            raw,
+                            "command",
+                            ParsedEntity(
+                                command.implementation.entity_id,
+                                params,
+                                current_view,
+                                negative=True,
+                            ),
+                            self._view_numbers(view_stack, parsed),
+                        )
+                    )
+                else:
+                    parsed.append(ParsedLine(number, raw, "other"))
+                continue
+
             view = self._match_view(stripped)
             if view is not None:
                 template, params = view
-                if _view_type(template) == "interface" and view_stack and _view_type(view_stack[-1][0]) == "interface":
-                    view_stack[-1] = (template, params)
+                entry = (template, params, len(parsed))
+                if (
+                    self._view_type_of(template) == "interface"
+                    and view_stack
+                    and self._view_type_of(view_stack[-1][0]) == "interface"
+                ):
+                    view_stack[-1] = entry
                 else:
-                    view_stack.append((template, params))
+                    view_stack.append(entry)
                 pending.clear()
                 parsed.append(ParsedLine(number, raw, "view"))
                 continue
 
-            context: dict[str, str] = {}
-            for _, params in view_stack:
-                context.update(params)
-            current_view = view_stack[-1][0] if view_stack else None
-            current_type = _view_type(current_view) if current_view else None
-
-            pre = self._match(self._pre_matchers, stripped, current_type, pending or None)
-            if pre is not None:
-                pending.add(pre.implementation.entity_id)
-                parsed.append(ParsedLine(number, raw, "pre"))
-                continue
-
             command = self._match(self._command_matchers, stripped, current_type, pending or None)
+            if command is None and view_stack:
+                # 源配置省略 quit/分节符时，允许按根视图命令隐式退出当前视图
+                command = self._match_root_command(stripped)
+                if command is not None:
+                    view_stack.clear()
+                    context = {}
+                    current_view = None
             if command is not None:
                 params = {**context, **command.template.match(stripped)}
                 pending.clear()
@@ -207,13 +273,60 @@ class SourceParser:
                         raw,
                         "command",
                         ParsedEntity(command.implementation.entity_id, params, current_view),
+                        self._view_numbers(view_stack, parsed),
                     )
                 )
+                if current_type == "system-view":
+                    # 复合命令可能同时进入子视图（如华为 ospf 1 router-id x），补齐后续行上下文
+                    entry = self._match_view_entry(stripped)
+                    if entry is not None:
+                        view_stack.append((entry[0], entry[1], -1))
+                continue
+
+            if view_stack:
+                # 视图行 + 视图内子命令合并为同一实体（如 ospf 1 换行 router-id x）
+                sub = self._match_sub_command(stripped, current_view)
+                if sub is not None:
+                    matcher, sub_params = sub
+                    entry_index = view_stack[-1][2]
+                    if entry_index >= 0:
+                        merged_params = {**context, **sub_params}
+                        origin = parsed[entry_index]
+                        parsed[entry_index] = ParsedLine(
+                            origin.no,
+                            origin.text,
+                            "command",
+                            ParsedEntity(
+                                matcher.implementation.entity_id, merged_params, current_view
+                            ),
+                            self._view_numbers(view_stack, parsed),
+                        )
+                        pending.clear()
+                        continue
+
+            # 兜底：未能作为独立实体匹配的前置命令（如仅有 port link-type trunk）
+            pre = self._match(self._pre_matchers, stripped, current_type, pending or None)
+            if pre is not None:
+                pending.add(pre.implementation.entity_id)
+                parsed.append(ParsedLine(number, raw, "pre"))
                 continue
 
             parsed.append(ParsedLine(number, raw, "other"))
 
         return parsed
+
+    def _view_numbers(
+        self,
+        view_stack: list[tuple[str, dict[str, str], int]],
+        parsed: list[ParsedLine],
+    ) -> dict[str, int]:
+        """记录每一层视图的源行号，供渲染器把生成视图行映射回源配置。"""
+        numbers: dict[str, int] = {}
+        for template, _, index in view_stack:
+            if index < 0:
+                continue
+            numbers[self._view_type_of(template)] = parsed[index].no
+        return numbers
 
     def _build_matchers(
         self,
@@ -239,20 +352,64 @@ class SourceParser:
     def _build_view_matchers(self) -> list[CompiledTemplate]:
         matchers: list[CompiledTemplate] = []
         seen: set[str] = set()
+
+        def add(template: str, spec: EntitySpec, view_type: str) -> None:
+            self._view_types.setdefault(template, view_type)
+            if template in seen:
+                return
+            seen.add(template)
+            matchers.append(compile_template(template, spec.parameters))
+            # 行首片段匹配：用于“配置并进入视图”的复合命令（如 ospf 1 router-id x）
+            self._view_prefix_matchers.append(
+                compile_template(template, spec.parameters, prefix=True)
+            )
+
         for spec in self._entities.values():
             for template in spec.view_path:
-                if template in seen:
-                    continue
-                seen.add(template)
-                matchers.append(compile_template(template, spec.parameters))
+                add(template, spec, _view_type(template))
+
+        for impl in self._implementations:
+            spec = self._entities.get(impl.entity_id)
+            if spec is None:
+                continue
+            for depth, template in enumerate(impl.view_path):
+                # 厂商视图结构覆盖：沿用规范视图类型，保证 impl.view 匹配不受影响
+                canonical = spec.view_path[depth] if depth < len(spec.view_path) else template
+                add(template, spec, _view_type(canonical))
+
         matchers.sort(key=lambda item: (-item.literal_length, len(item.param_names)))
         return matchers
+
+    def _view_type_of(self, template: str) -> str:
+        return self._view_types.get(template, _view_type(template))
 
     def _match_view(self, text: str) -> tuple[str, dict[str, str]] | None:
         for matcher in self._view_matchers:
             params = matcher.match(text)
             if params is not None:
                 return matcher.template, params
+        return None
+
+    def _match_view_entry(self, text: str) -> tuple[str, dict[str, str]] | None:
+        """匹配行首的视图进入片段，用于复合命令补齐视图上下文。"""
+        for matcher in self._view_prefix_matchers:
+            params = matcher.match(text)
+            if params is not None:
+                return matcher.template, params
+        return None
+
+    def _match_sub_command(
+        self, text: str, view_template: str | None
+    ) -> tuple[SourceMatcher, dict[str, str]] | None:
+        """匹配视图内的子命令，其所属实现的命令需以当前视图行开头。"""
+        if not view_template:
+            return None
+        for matcher in self._sub_matchers:
+            if not _starts_with(matcher.implementation.command, view_template):
+                continue
+            params = matcher.template.match(text)
+            if params is not None:
+                return matcher, params
         return None
 
     def _match(
@@ -269,6 +426,21 @@ class SourceParser:
             if matched is not None:
                 return matched
         return self._first_match(candidates, text, current_type, None)
+
+    def _match_root_command(self, text: str) -> SourceMatcher | None:
+        """匹配隶属根视图的命令，用于源配置省略视图退出指令的场景。"""
+        first = text.split(maxsplit=1)[0].lower()
+        candidates = [*self._command_matchers.get(first, []), *self._command_matchers.get("", [])]
+        for matcher in candidates:
+            impl = matcher.implementation
+            spec = self._entities.get(impl.entity_id)
+            if spec is None or not spec.view_path:
+                continue
+            if impl.view.strip().lower() != _view_type(spec.view_path[0]):
+                continue
+            if matcher.template.match(text) is not None:
+                return matcher
+        return None
 
     @staticmethod
     def _first_match(
@@ -290,3 +462,14 @@ class SourceParser:
 
 def _view_type(template: str) -> str:
     return template.split(maxsplit=1)[0].lower()
+
+
+def _starts_with(command: str | None, prefix: str) -> bool:
+    if not command:
+        return False
+    command_tokens = command.split()
+    prefix_tokens = prefix.split()
+    return (
+        len(prefix_tokens) <= len(command_tokens)
+        and command_tokens[: len(prefix_tokens)] == prefix_tokens
+    )

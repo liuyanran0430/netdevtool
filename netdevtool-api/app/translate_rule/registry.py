@@ -23,30 +23,6 @@ class KnowledgeRegistry:
     def load(cls, base_dir: str | Path | None = None) -> "KnowledgeRegistry":
         return cls(load_knowledge(base_dir))
 
-    @property
-    def base_dir(self) -> Path:
-        return self._result.base_dir
-
-    @property
-    def entities(self) -> dict[str, EntitySpec]:
-        return self._result.entities
-
-    @property
-    def implementations(self) -> dict[tuple[str, str, str], Implementation]:
-        return self._result.implementations
-
-    @property
-    def profiles(self) -> dict[tuple[str, str], VendorProfile]:
-        return self._result.profiles
-
-    @property
-    def skipped(self) -> list[str]:
-        return list(self._result.skipped)
-
-    @property
-    def warnings(self) -> list[str]:
-        return list(self._result.warnings)
-
     def get_entity(self, entity_id: str) -> EntitySpec | None:
         return self._result.entities.get(entity_id)
 

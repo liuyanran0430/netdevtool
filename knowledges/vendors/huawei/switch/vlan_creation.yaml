@@ -1,0 +1,14 @@
+entity_id: vlan_creation
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+command: "vlan {vlan_id}"
+view: system-view
+verified: true
+warnings:
+  - "VLAN 名称需进入 VLAN 视图后使用 name 命令配置，当前仅翻译创建命令"
+sources:
+  - "华为 VRP VLAN 配置命令：vlan vlan-id，CE 系列与 S 系列一致"

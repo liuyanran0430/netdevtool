@@ -1,0 +1,17 @@
+entity_id: ospf_area_network
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+view_path:
+  - "system-view"
+  - "router ospf {process_id}"
+command: "network {network} {wildcard_mask} area {area_id}"
+view: ospf
+verified: true
+warnings:
+  - "ZXR10 无独立 area 子视图，区域网段通过 network ip wildcard-mask area area-id 单行宣告，需现场核对命令顺序"
+sources:
+  - "ZXR10 交换机 OSPF 配置：OSPF 视图下 network network wildcard-mask area area-id"

@@ -62,6 +62,24 @@ class TranslationResultLine(APIModel):
     no: int
     text: str
     tone: str
+    source_no: int | None = None
+    entity_id: str | None = None
+
+
+class TranslationWarning(APIModel):
+    """行级告警，`no` 为源配置行号。"""
+
+    no: int
+    message: str
+    code: str = "unknown"
+    severity: str = "warn"
+
+
+class TranslationEntityInfo(APIModel):
+    """结果中引用的规范实体及其说明。"""
+
+    id: str
+    description: str | None = None
 
 
 class TranslationResultSummary(APIModel):
@@ -71,6 +89,8 @@ class TranslationResultSummary(APIModel):
 
 class TranslationResult(APIModel):
     lines: list[TranslationResultLine]
+    warnings: list[TranslationWarning] = []
+    entities: list[TranslationEntityInfo] = []
     summary: TranslationResultSummary
 
 

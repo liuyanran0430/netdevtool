@@ -1,0 +1,12 @@
+entity_id: port_link_type
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "port link-type {mode}"
+view: interface
+verified: true
+sources:
+  - "H3C Comware V7 接口链路类型命令：port link-type access/trunk/hybrid"

@@ -1,0 +1,7 @@
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8083'
+
+/** 解析后端统一错误响应 `{ code, message, detail }`，无响应体时退回状态码文案。 */
+export async function toRequestError(response: Response, action: string): Promise<Error> {
+  const body = (await response.json().catch(() => null)) as { message?: string } | null
+  return new Error(body?.message ?? `${action}：${response.status}`)
+}

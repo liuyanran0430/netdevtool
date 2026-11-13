@@ -1,0 +1,13 @@
+entity_id: port_link_type
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+command: "port link-type {mode}"
+view: interface
+verified: true
+sources:
+  - "华为 VRP 接口链路类型命令：port link-type access/trunk/hybrid"
+  - "CE 系列与 S 系列语法一致[reference:10]"

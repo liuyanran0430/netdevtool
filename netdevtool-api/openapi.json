@@ -27,31 +27,6 @@
         }
       }
     },
-    "/api/v1/devices/types": {
-      "get": {
-        "tags": [
-          "devices"
-        ],
-        "summary": "查询设备类型枚举",
-        "operationId": "get_device_types_api_v1_devices_types_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/DeviceType"
-                  },
-                  "type": "array",
-                  "title": "Response Get Device Types Api V1 Devices Types Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/devices": {
       "get": {
         "tags": [
@@ -385,6 +360,31 @@
         "title": "TranslationCreated",
         "description": "创建翻译任务出参。"
       },
+      "TranslationEntityInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "TranslationEntityInfo",
+        "description": "结果中引用的规范实体及其说明。"
+      },
       "TranslationOut": {
         "properties": {
           "request_id": {
@@ -433,6 +433,22 @@
             "type": "array",
             "title": "Lines"
           },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/TranslationWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/TranslationEntityInfo"
+            },
+            "type": "array",
+            "title": "Entities",
+            "default": []
+          },
           "summary": {
             "$ref": "#/components/schemas/TranslationResultSummary"
           }
@@ -457,6 +473,28 @@
           "tone": {
             "type": "string",
             "title": "Tone"
+          },
+          "source_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source No"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
           }
         },
         "type": "object",
@@ -495,6 +533,35 @@
         ],
         "title": "TranslationTaskStatus",
         "description": "翻译任务状态。"
+      },
+      "TranslationWarning": {
+        "properties": {
+          "no": {
+            "type": "integer",
+            "title": "No"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code",
+            "default": "unknown"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "default": "warn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "no",
+          "message"
+        ],
+        "title": "TranslationWarning",
+        "description": "行级告警，`no` 为源配置行号。"
       },
       "ValidationError": {
         "properties": {

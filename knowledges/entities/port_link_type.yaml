@@ -1,0 +1,15 @@
+id: port_link_type
+domain: vlan
+description: "设置接口链路类型（access / trunk / hybrid）"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+  mode:
+    type: string
+    required: true
+    note: "链路类型，如 access / trunk / hybrid"
+semantic_notes:
+  - "华为/华三使用 port link-type；中兴使用 switchport mode"
+  - "与 trunk 放行 VLAN 拆分为独立实体，单独出现时也能正常翻译"

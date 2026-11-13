@@ -8,6 +8,8 @@ confidence: high
 pre_commands:
   - "port link-type trunk"
 command: "port trunk allow-pass vlan {vlan_list}"
+param_formats:
+  vlan_list: to
 view: interface
 verified: true
 sources:

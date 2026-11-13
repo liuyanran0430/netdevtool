@@ -26,11 +26,6 @@ class DeviceRepository:
 
         return list(self.db.scalars(stmt.order_by(Device.id)))
 
-    def list_device_types(self) -> list[DeviceType]:
-        """查询表中出现过的全部设备类型（去重）。"""
-        stmt = select(Device.device_type).distinct().order_by(Device.device_type)
-        return list(self.db.scalars(stmt))
-
     def find_by_vendor_and_model(self, vendor: str, model: str) -> Device | None:
         """按厂商与型号精确查询设备档案。"""
         stmt = select(Device).where(Device.vendor == vendor, Device.model == model)

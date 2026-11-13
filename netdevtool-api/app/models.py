@@ -74,8 +74,9 @@ class TranslationTask(Base):
     source_model: Mapped[str] = mapped_column(String(128), nullable=False)
     target_vendor: Mapped[str] = mapped_column(String(64), nullable=False)
     target_model: Mapped[str] = mapped_column(String(128), nullable=False)
-    source_text: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
-    result_json: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    # 大字段延迟加载：前端每秒轮询状态时无需传输源配置与结果 JSON
+    source_text: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False, deferred=True)
+    result_json: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     error_message: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

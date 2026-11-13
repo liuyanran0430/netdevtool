@@ -95,6 +95,9 @@ class Implementation(BaseModel):
     pre_commands: list[str] = Field(default_factory=list)
     command: str | None = None
     view: str | None = None
+    view_path: list[str] = Field(default_factory=list)
+    sub_commands: list[str] = Field(default_factory=list)
+    param_formats: dict[str, str] = Field(default_factory=dict)
     verified: bool = False
     unsupported_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -104,6 +107,15 @@ class Implementation(BaseModel):
     @classmethod
     def _normalize_lower(cls, value: str) -> str:
         return value.strip().lower()
+
+    @field_validator("param_formats")
+    @classmethod
+    def _check_param_formats(cls, value: dict[str, str]) -> dict[str, str]:
+        allowed = {"to", "hyphen"}
+        for name, style in value.items():
+            if style not in allowed:
+                raise ValueError(f"param_formats.{name} 仅支持 {sorted(allowed)}")
+        return value
 
     @model_validator(mode="after")
     def _validate_command(self) -> "Implementation":
@@ -123,6 +135,7 @@ class VendorProfile(BaseModel):
     device_type: str = Field(min_length=1)
     view_exit: str = Field(default="quit", min_length=1)
     view_return: str = Field(default="return", min_length=1)
+    negation_prefix: str = Field(default="undo", min_length=1)
     allow_direct_view_switch: bool = False
     auto_close_views: bool = True
 

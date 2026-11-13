@@ -1,0 +1,17 @@
+id: vlan_creation
+domain: vlan
+description: "创建 VLAN 并可选配置名称"
+view_path: ["system-view"]
+parameters:
+  vlan_id:
+    type: int
+    range: [1, 4094]
+    required: true
+    note: "VLAN ID，部分厂商保留 1 为默认 VLAN，业务 VLAN 通常从 2 开始"
+  vlan_name:
+    type: string
+    required: false
+    note: "可选的 VLAN 描述名称，长度限制各厂商不同"
+semantic_notes:
+  - "各厂商的 VLAN 创建命令均为 vlan <id>，视图进入方式高度一致"
+  - "VLAN 名称配置在部分厂商需进入 VLAN 视图后使用 name 命令，部分厂商支持 vlan <id> name <name> 一行完成"
