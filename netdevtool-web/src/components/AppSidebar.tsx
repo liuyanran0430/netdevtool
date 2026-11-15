@@ -1,12 +1,17 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   AuditOutlined,
   BookOutlined,
   DeploymentUnitOutlined,
+  LogoutOutlined,
   MessageOutlined,
   TranslationOutlined,
 } from '@ant-design/icons'
-import { NavLink } from 'react-router-dom'
+import { Popover } from 'antd'
+import { NavLink, useNavigate } from 'react-router-dom'
+import { logout } from '../api/auth'
+import { clearSession, readSession } from '../auth/session'
 
 interface NavItem {
   to: string
@@ -36,6 +41,69 @@ interface SidebarProps {
 
 /** 全局导航：桌面端 84px 竖栏，移动端以抽屉形式折叠 */
 export function AppSidebar({ variant = 'desktop', onNavigate }: SidebarProps) {
+  const navigate = useNavigate()
+  const [loggingOut, setLoggingOut] = useState(false)
+  const displayName = readSession()?.user.name ?? '未登录'
+  const username = readSession()?.user.username ?? ''
+  const initial = Array.from(displayName)[0] ?? '?'
+
+  async function handleLogout() {
+    if (loggingOut) return
+    setLoggingOut(true)
+    const token = readSession()?.token
+    try {
+      if (token) await logout(token)
+    } catch {
+      // 后端不可用时也要允许本地退出
+    }
+    clearSession()
+    navigate('/login', { replace: true })
+  }
+
+  const userMenu = (
+    <div className="w-[184px] overflow-hidden">
+      <div className="flex items-center gap-2.5 px-3 py-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-[13px] font-bold text-brand">
+          {initial}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-[13px] font-medium leading-tight text-ink-900">
+            {displayName}
+          </p>
+          {username ? (
+            <p className="mt-0.5 truncate text-[11px] leading-none text-ink-400">@{username}</p>
+          ) : null}
+        </div>
+      </div>
+      <div className="h-px bg-line" />
+      <button
+        type="button"
+        disabled={loggingOut}
+        onClick={() => {
+          void handleLogout()
+        }}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-[12px] text-ink-700 transition-colors hover:bg-danger-soft hover:text-danger disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <LogoutOutlined />
+        {loggingOut ? '正在退出…' : '退出登录'}
+      </button>
+    </div>
+  )
+
+  const userMenuProps = {
+    trigger: 'click' as const,
+    arrow: false,
+    content: userMenu,
+    styles: {
+      container: {
+        padding: 0,
+        borderRadius: 12,
+        overflow: 'hidden',
+        boxShadow: '0 10px 30px rgba(32, 44, 64, 0.12)',
+      },
+    },
+  }
+
   if (variant === 'drawer') {
     return (
       <div className="flex h-full flex-col bg-white px-3 py-5">
@@ -65,12 +133,18 @@ export function AppSidebar({ variant = 'desktop', onNavigate }: SidebarProps) {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto flex items-center gap-3 border-t border-line pt-4">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#DDE6F4] text-[12px] font-bold text-[#526B93]">
-            运维
-          </span>
-          <span className="text-[13px] text-ink-500">运维账号</span>
-        </div>
+        <Popover {...userMenuProps} placement="topLeft">
+          <button
+            type="button"
+            title={displayName}
+            className="mt-auto flex w-full items-center gap-3 rounded-lg border-t border-line px-1 pt-4 pb-1 text-left hover:bg-soft"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#DDE6F4] text-[13px] font-bold text-[#526B93]">
+              {initial}
+            </span>
+            <span className="truncate text-[13px] text-ink-700">{displayName}</span>
+          </button>
+        </Popover>
       </div>
     )
   }
@@ -107,9 +181,18 @@ export function AppSidebar({ variant = 'desktop', onNavigate }: SidebarProps) {
 
       <div className="flex-1" />
 
-      <div className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[#DDE6F4] text-[12px] font-bold text-[#526B93]">
-        运维
-      </div>
+      <Popover {...userMenuProps} placement="top">
+        <button
+          type="button"
+          title={displayName}
+          aria-label="用户菜单"
+          className="rounded-full transition-shadow hover:ring-2 hover:ring-brand-line"
+        >
+          <span className="flex h-[40px] w-[40px] items-center justify-center rounded-full bg-[#DDE6F4] text-[15px] font-bold text-[#526B93]">
+            {initial}
+          </span>
+        </button>
+      </Popover>
     </aside>
   )
 }

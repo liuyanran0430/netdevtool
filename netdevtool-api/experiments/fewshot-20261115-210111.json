@@ -1,0 +1,487 @@
+[
+  {
+    "case": "stp-huawei-h3c",
+    "group": "A",
+    "request_chars": 764,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {},
+      "target_command": "stp edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface {intf}"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp edged-port",
+      "reasoning": "华为 VRP 在接口视图下用 `stp edged-port enable` 把端口配置为边缘端口；H3C Comware（V5/V7）的等价命令是接口视图下的 `stp edged-port`，无 `enable` 关键字，其否定形式为 `undo stp edged-port`。两者功能一致，即把端口设置为 STP 边缘端口并跳过 Listening/Learning 状态迁移。命令本身无参数，但需在对应接口视图下执行。",
+      "sources": [
+        "华为 S 系列交换机产品文档 - STP 配置命令 stp edged-port enable",
+        "H3C 交换机 Comware V7 二层技术-STP 命令参考 stp edged-port"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp edged-port"
+    }
+  },
+  {
+    "case": "stp-huawei-h3c",
+    "group": "B",
+    "request_chars": 1033,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {},
+      "target_command": "stp edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp edged-port",
+      "reasoning": "华为交换机在接口视图下使用 stp edged-port enable 将端口配置为边缘端口；H3C Comware 对应接口视图命令为 stp edged-port，取消命令为 undo stp edged-port。",
+      "sources": [
+        "H3C Comware 命令参考：STP 配置命令 stp edged-port"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp edged-port"
+    }
+  },
+  {
+    "case": "stp-huawei-h3c",
+    "group": "C",
+    "request_chars": 1234,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {
+        "intf": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "stp edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface {intf}"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp edged-port",
+      "reasoning": "华为接口视图下的 `stp edged-port enable` 用于将端口配置为 STP 边缘端口；H3C Comware 对应接口视图命令为 `stp edged-port`，其反向命令为 `undo stp edged-port`。",
+      "sources": [
+        "H3C Comware Layer 2—LAN Switching Command Reference: stp edged-port",
+        "Huawei VRP STP Command Reference: stp edged-port enable"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp edged-port"
+    }
+  },
+  {
+    "case": "stp-huawei-zte",
+    "group": "A",
+    "request_chars": 764,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {
+        "intf": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "spanning-tree edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface {intf}"
+      ],
+      "pre_commands": [],
+      "negative_command": "no spanning-tree edged-port",
+      "reasoning": "华为接口视图下 stp edged-port enable 用于将端口配置为 STP 边缘端口；中兴交换机对应接口视图命令为 spanning-tree edged-port，取消命令为 no spanning-tree edged-port。",
+      "sources": [
+        "ZTE ZXR10 switch STP command reference: spanning-tree edged-port"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "spanning-tree edged-port"
+    }
+  },
+  {
+    "case": "stp-huawei-zte",
+    "group": "B",
+    "request_chars": 1033,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {
+        "intf": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "spanning-tree edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface {intf}"
+      ],
+      "pre_commands": [],
+      "negative_command": null,
+      "reasoning": "Huawei接口视图命令 stp edged-port enable 用于将端口配置为STP边缘端口；ZTE交换机在接口视图下使用 spanning-tree edged-port 配置边缘端口。",
+      "sources": [
+        "ZTE ZXR10 switch STP command reference (spanning-tree edged-port)"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "spanning-tree edged-port"
+    }
+  },
+  {
+    "case": "stp-huawei-zte",
+    "group": "C",
+    "request_chars": 1234,
+    "response": {
+      "status": "found",
+      "source_template": "stp edged-port enable",
+      "parameters": {
+        "intf": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "spanning-tree edged-port",
+      "target_view_path": [
+        "system-view",
+        "interface {intf}"
+      ],
+      "pre_commands": [],
+      "negative_command": "no spanning-tree edged-port",
+      "reasoning": "华为接口视图下将端口配置为STP边缘端口；中兴ZXR10交换机对应接口视图命令为spanning-tree edged-port，无需enable关键字。",
+      "sources": [
+        "ZTE ZXR10 switch STP command reference"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "spanning-tree edged-port"
+    }
+  },
+  {
+    "case": "bpdu-protection-huawei-h3c",
+    "group": "A",
+    "request_chars": 764,
+    "response": {
+      "status": "found",
+      "source_template": "stp bpdu-protection",
+      "parameters": {},
+      "target_command": "stp bpdu-protection",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp bpdu-protection",
+      "reasoning": "华为交换机在 system-view 下的全局 BPDU 保护命令为 stp bpdu-protection；H3C（Comware）交换机也提供同名全局命令 stp bpdu-protection，用于在边缘端口收到 BPDU 时关闭端口，语义等价。",
+      "sources": [
+        "H3C Comware STP BPDU guard command reference: stp bpdu-protection"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp bpdu-protection"
+    }
+  },
+  {
+    "case": "bpdu-protection-huawei-h3c",
+    "group": "B",
+    "request_chars": 1020,
+    "response": {
+      "status": "found",
+      "source_template": "stp bpdu-protection",
+      "parameters": {},
+      "target_command": "stp bpdu-protection",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp bpdu-protection",
+      "reasoning": "Huawei 与 H3C 均支持在 system-view 下使用 stp bpdu-protection 全局启用 BPDU 保护，命令关键字一致。",
+      "sources": [
+        "Huawei/H3C STP BPDU protection command reference"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp bpdu-protection"
+    }
+  },
+  {
+    "case": "bpdu-protection-huawei-h3c",
+    "group": "C",
+    "request_chars": 1234,
+    "response": {
+      "status": "found",
+      "source_template": "stp bpdu-protection",
+      "parameters": {},
+      "target_command": "stp bpdu-protection",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo stp bpdu-protection",
+      "reasoning": "华为与H3C均使用全局命令 stp bpdu-protection 开启BPDU保护，命令关键字一致，视图同为 system-view。",
+      "sources": [
+        "Huawei S系列交换机STP命令参考：stp bpdu-protection",
+        "H3C Comware STP命令参考：stp bpdu-protection"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "stp bpdu-protection"
+    }
+  },
+  {
+    "case": "ntp-server-huawei-zte",
+    "group": "A",
+    "request_chars": 780,
+    "response": {
+      "status": "found",
+      "source_template": "ntp-service unicast-server {server_ip}",
+      "parameters": {
+        "server_ip": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "ntp server {server_ip}",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "no ntp server {server_ip}",
+      "reasoning": "华为全局视图下使用 ntp-service unicast-server 指定 NTP 单播服务器；中兴交换机对应全局 NTP 服务器配置通常为 ntp server <ip>。",
+      "sources": [
+        "通用ZTE交换机NTP配置命令"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "ntp server 10.1.1.1"
+    }
+  },
+  {
+    "case": "ntp-server-huawei-zte",
+    "group": "B",
+    "request_chars": 1049,
+    "response": {
+      "status": "found",
+      "source_template": "ntp-service unicast-server {ip}",
+      "parameters": {
+        "ip": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "ntp server {ip}",
+      "target_view_path": [
+        "configure terminal"
+      ],
+      "pre_commands": [
+        "ntp enable"
+      ],
+      "negative_command": "no ntp server {ip}",
+      "reasoning": "华为在 system-view 下用 ntp-service unicast-server <ip> 指定 NTP 单播服务器；中兴 ZXR10 交换机在全局配置模式（configure terminal）下用 ntp server <ip> 指定 NTP 服务器，且需要先用 ntp enable 使能 NTP 功能。两者语义等价，均是把指定 IP 配置为 NTP 单播服务器。参数仅为服务器 IPv4 地址，无其他必选参数。",
+      "sources": [
+        "华为 VRP NTP 配置命令参考（ntp-service unicast-server）",
+        "中兴 ZXR10 系列交换机 NTP 配置指导（ntp enable / ntp server <ip-address>）"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "ntp server 10.1.1.1"
+    }
+  },
+  {
+    "case": "ntp-server-huawei-zte",
+    "group": "C",
+    "request_chars": 1250,
+    "response": {
+      "status": "found",
+      "source_template": "ntp-service unicast-server {ip}",
+      "parameters": {
+        "ip": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "target_command": "ntp server {ip}",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": null,
+      "reasoning": "华为的 ntp-service unicast-server 用于指定单播 NTP 服务器；中兴 ZXR10 交换机在全局配置视图下使用 ntp server <ip-address> 指定 NTP 服务器。",
+      "sources": [
+        "ZTE ZXR10 交换机 NTP 配置命令参考"
+      ],
+      "confidence": "medium"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "ntp server 10.1.1.1"
+    }
+  },
+  {
+    "case": "dhcp-enable-huawei-h3c",
+    "group": "A",
+    "request_chars": 756,
+    "response": {
+      "status": "found",
+      "source_template": "dhcp enable",
+      "parameters": {},
+      "target_command": "dhcp enable",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo dhcp enable",
+      "reasoning": "H3C 与华为同源的 Comware 系统在系统视图中都使用 `dhcp enable` 全局使能 DHCP 服务，两者命令关键字和视图完全一致，无需任何参数，也不需要转换命令形态。",
+      "sources": [
+        "H3C Comware V7 DHCP 配置命令手册（系统视图 dhcp enable）",
+        "华为 VRP DHCP 配置命令参考（系统视图 dhcp enable）"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "dhcp enable"
+    }
+  },
+  {
+    "case": "dhcp-enable-huawei-h3c",
+    "group": "B",
+    "request_chars": 1030,
+    "response": {
+      "status": "found",
+      "source_template": "dhcp enable",
+      "parameters": {},
+      "target_command": "dhcp enable",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo dhcp enable",
+      "reasoning": "Huawei 与 H3C（Comware V5/V7）均使用全局命令 dhcp enable 在系统视图下开启 DHCP 服务，命令字和视图一致，无需参数转换；对应的关闭命令为 undo dhcp enable。",
+      "sources": [
+        "H3C Comware V7 DHCP 配置命令参考：dhcp enable（system-view）",
+        "Huawei VRP DHCP 配置命令参考：dhcp enable（system-view）"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "dhcp enable"
+    }
+  },
+  {
+    "case": "dhcp-enable-huawei-h3c",
+    "group": "C",
+    "request_chars": 1226,
+    "response": {
+      "status": "found",
+      "source_template": "dhcp enable",
+      "parameters": {},
+      "target_command": "dhcp enable",
+      "target_view_path": [
+        "system-view"
+      ],
+      "pre_commands": [],
+      "negative_command": "undo dhcp enable",
+      "reasoning": "华为 VRP 在 system-view 下用 `dhcp enable` 开启 DHCP 服务；H3C Comware V7 同样在 system-view 下提供 `dhcp enable`（对应 undo dhcp enable 关闭），命令关键字与视图完全一致，可直接等价翻译。",
+      "sources": [
+        "华为 VRP DHCP 配置命令参考：dhcp enable（系统视图）",
+        "H3C Comware V7 DHCP 命令参考：dhcp enable（系统视图）"
+      ],
+      "confidence": "high"
+    },
+    "validation": {
+      "json": true,
+      "schema": true,
+      "replay": true,
+      "target": true,
+      "notes": [],
+      "rendered": "dhcp enable"
+    }
+  }
+]

@@ -1,12 +1,25 @@
 """知识库索引：进程内单例缓存与 `device_type → common` 回退查询。"""
 
+import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 
 from app.translate_rule.loader import LoadResult, load_knowledge
 from app.translate_rule.models import EntitySpec, Implementation, VendorProfile
 
 COMMON_DEVICE_TYPE = "common"
+_INTERFACE_NUMBER = r"(?P<number>[0-9][0-9/.:_-]*)"
+
+
+@lru_cache(maxsize=None)
+def _interface_pattern(template: str) -> re.Pattern[str]:
+    """把 `Vlanif{number}` 这类模板编译为宽松匹配（忽略大小写与多余空格）。"""
+    prefix, _, suffix = template.partition("{number}")
+    return re.compile(
+        r"^\s*" + re.escape(prefix) + r"\s*" + _INTERFACE_NUMBER + re.escape(suffix) + r"\s*$",
+        re.IGNORECASE,
+    )
 
 
 class KnowledgeRegistry:
@@ -23,8 +36,52 @@ class KnowledgeRegistry:
     def load(cls, base_dir: str | Path | None = None) -> "KnowledgeRegistry":
         return cls(load_knowledge(base_dir))
 
+    @property
+    def base_dir(self) -> Path:
+        return self._result.base_dir
+
+    @property
+    def entities(self) -> dict[str, EntitySpec]:
+        """规范实体索引，解析与渲染共用。"""
+        return self._result.entities
+
     def get_entity(self, entity_id: str) -> EntitySpec | None:
         return self._result.entities.get(entity_id)
+
+    def interface_templates(self, vendor: str, device_type: str) -> dict[str, str]:
+        """返回厂商接口命名表，未命中时回退到 `common`。"""
+        vendor_key = vendor.strip().lower()
+        device_key = device_type.strip().lower()
+        return (
+            self._result.interfaces.get((vendor_key, device_key))
+            or self._result.interfaces.get((vendor_key, COMMON_DEVICE_TYPE))
+            or {}
+        )
+
+    def map_interface(
+        self,
+        intf: str,
+        *,
+        source_vendor: str,
+        source_device_type: str,
+        target_vendor: str,
+        target_device_type: str,
+    ) -> tuple[str, bool]:
+        """按源厂商命名识别接口类型，再用目标厂商模板重写。
+
+        返回 `(接口名, 是否映射成功)`；无法识别或目标厂商缺少同类型时原样返回。
+        """
+        source = self.interface_templates(source_vendor, source_device_type)
+        target = self.interface_templates(target_vendor, target_device_type)
+        for type_key, template in source.items():
+            matched = _interface_pattern(template).match(intf)
+            if matched is None:
+                continue
+            target_template = target.get(type_key)
+            if not target_template:
+                return intf, False
+            return target_template.replace("{number}", matched.group("number")), True
+        return intf, False
 
     def resolve(
         self,
@@ -63,21 +120,48 @@ class KnowledgeRegistry:
 
 _registry: KnowledgeRegistry | None = None
 _registry_lock = threading.Lock()
+_registry_signature: tuple[tuple[str, int], ...] | None = None
+
+
+def _supplements_signature(base_dir: Path) -> tuple[tuple[str, int], ...]:
+    """补充知识库目录签名：文件路径 + 修改时间，用于热重载判断。"""
+    supplements_dir = base_dir / "supplements"
+    if not supplements_dir.is_dir():
+        return ()
+    signature: list[tuple[str, int]] = []
+    for path in supplements_dir.rglob("*.yaml"):
+        try:
+            signature.append((path.as_posix(), path.stat().st_mtime_ns))
+        except OSError:
+            continue
+    return tuple(sorted(signature))
+
+
+def reload_registry() -> None:
+    """标记知识库失效，下次 `get_registry()` 重新加载。"""
+    global _registry, _registry_signature
+    with _registry_lock:
+        _registry = None
+        _registry_signature = None
 
 
 def get_registry() -> KnowledgeRegistry:
-    """获取进程内单例；首次调用时加载。"""
-    global _registry
+    """获取进程内单例；补充知识库文件变化时自动重建。"""
+    global _registry, _registry_signature
     if _registry is None:
         with _registry_lock:
             if _registry is None:
                 _registry = KnowledgeRegistry.load()
-    return _registry
+                _registry_signature = _supplements_signature(_registry.base_dir)
+        return _registry
 
-
-def reload_registry(base_dir: str | Path | None = None) -> KnowledgeRegistry:
-    """强制重新加载知识库，用于开发期热更新。"""
-    global _registry
+    current = _supplements_signature(_registry.base_dir)
+    if current == _registry_signature:
+        return _registry
     with _registry_lock:
-        _registry = KnowledgeRegistry.load(base_dir)
+        if _registry is not None:
+            current = _supplements_signature(_registry.base_dir)
+            if current != _registry_signature:
+                _registry = KnowledgeRegistry.load(_registry.base_dir)
+                _registry_signature = current
     return _registry

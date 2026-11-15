@@ -65,6 +65,8 @@ class ParsedLine:
     entity: ParsedEntity | None = None
     # 视图类型 -> 进入该视图的源行号，供渲染器把生成行映射回源配置
     view_nos: dict[str, int] | None = None
+    # 该行所在的视图类型，未识别命令用于采集知识缺口
+    view: str | None = None
 
 
 def compile_template(
@@ -166,8 +168,10 @@ class SourceParser:
                     self._sub_matchers.append(
                         SourceMatcher(impl, compile_template(template, spec.parameters))
                     )
-        self._sub_matchers.sort(key=lambda item: -item.template.literal_length)
+        self._sub_matchers.sort(key=_matcher_order)
         self._command_matchers = self._build_matchers(implementations, with_command=True)
+        # 否定形式使用独立命令的厂商（如华三 port link-mode route）单独建立匹配表
+        self._negative_matchers = self._build_negative_matchers(implementations)
         self._pre_matchers = self._build_matchers(implementations, with_command=False)
         self._view_matchers = self._build_view_matchers()
 
@@ -237,7 +241,7 @@ class SourceParser:
                         )
                     )
                 else:
-                    parsed.append(ParsedLine(number, raw, "other"))
+                    parsed.append(ParsedLine(number, raw, "other", view=current_type))
                 continue
 
             view = self._match_view(stripped)
@@ -257,6 +261,13 @@ class SourceParser:
                 continue
 
             command = self._match(self._command_matchers, stripped, current_type, pending or None)
+            negative = False
+            if command is None:
+                # 否定形式使用独立命令的厂商（如华三 port link-mode route）
+                command = self._match(
+                    self._negative_matchers, stripped, current_type, pending or None
+                )
+                negative = command is not None
             if command is None and view_stack:
                 # 源配置省略 quit/分节符时，允许按根视图命令隐式退出当前视图
                 command = self._match_root_command(stripped)
@@ -272,7 +283,12 @@ class SourceParser:
                         number,
                         raw,
                         "command",
-                        ParsedEntity(command.implementation.entity_id, params, current_view),
+                        ParsedEntity(
+                            command.implementation.entity_id,
+                            params,
+                            current_view,
+                            negative=negative,
+                        ),
                         self._view_numbers(view_stack, parsed),
                     )
                 )
@@ -311,7 +327,7 @@ class SourceParser:
                 parsed.append(ParsedLine(number, raw, "pre"))
                 continue
 
-            parsed.append(ParsedLine(number, raw, "other"))
+            parsed.append(ParsedLine(number, raw, "other", view=current_type))
 
         return parsed
 
@@ -346,7 +362,22 @@ class SourceParser:
                 compiled = compile_template(template, spec.parameters)
                 buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
         for matchers in buckets.values():
-            matchers.sort(key=lambda item: (-item.template.literal_length, len(item.template.param_names)))
+            matchers.sort(key=_matcher_order)
+        return buckets
+
+    def _build_negative_matchers(
+        self, implementations: list[Implementation]
+    ) -> dict[str, list[SourceMatcher]]:
+        """为声明了 negative_command 的实现建立否定形式匹配表。"""
+        buckets: dict[str, list[SourceMatcher]] = {}
+        for impl in implementations:
+            spec = self._entities.get(impl.entity_id)
+            if spec is None or not impl.negative_command:
+                continue
+            compiled = compile_template(impl.negative_command, spec.parameters)
+            buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
+        for matchers in buckets.values():
+            matchers.sort(key=_matcher_order)
         return buckets
 
     def _build_view_matchers(self) -> list[CompiledTemplate]:
@@ -462,6 +493,15 @@ class SourceParser:
 
 def _view_type(template: str) -> str:
     return template.split(maxsplit=1)[0].lower()
+
+
+def _matcher_order(item: SourceMatcher) -> tuple[bool, int, int]:
+    """匹配优先级：核心层优先于补充层，其次长字面量优先，最后参数少的优先。"""
+    return (
+        item.implementation.origin == "supplement",
+        -item.template.literal_length,
+        len(item.template.param_names),
+    )
 
 
 def _starts_with(command: str | None, prefix: str) -> bool:

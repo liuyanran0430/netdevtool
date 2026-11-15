@@ -1,0 +1,10 @@
+vendor: h3c
+device_type: switch
+interfaces:
+  vlan: "Vlan-interface{number}"
+  gigabit: "GE{number}"
+  ten_gigabit: "XGE{number}"
+  loopback: "LoopBack{number}"
+  tunnel: "Tunnel{number}"
+  management: "M-GigabitEthernet{number}"
+  aggregation: "Bridge-Aggregation{number}"

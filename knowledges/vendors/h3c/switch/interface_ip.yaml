@@ -1,0 +1,12 @@
+entity_id: interface_ip
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "ip address {ip} {mask}"
+view: interface
+verified: true
+sources:
+  - "H3C Comware V7 接口视图：ip address ip-address { mask | mask-length }"

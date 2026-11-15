@@ -1,0 +1,12 @@
+entity_id: stp_mode
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: medium
+command: stp mode {mode}
+view: system-view
+verified: true
+sources:
+  - "华为 VRP：stp mode {mode}"

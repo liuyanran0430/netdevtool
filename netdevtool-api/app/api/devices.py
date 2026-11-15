@@ -3,8 +3,9 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.database import get_db
-from app.models import DeviceType
+from app.models import DeviceType, User
 from app.schemas import DeviceOut
 from app.services.device_service import list_devices
 
@@ -18,5 +19,6 @@ def get_devices(
         None, description="设备类型：switch=交换机，firewall=防火墙"
     ),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[DeviceOut]:
     return list_devices(db, vendor=vendor, device_type=device_type)

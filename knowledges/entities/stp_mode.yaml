@@ -1,0 +1,11 @@
+id: stp_mode
+domain: vlan
+description: 配置生成树协议模式
+view_path: ["system-view"]
+parameters:
+  mode:
+    type: string
+    required: true
+    pattern: (stp|rstp|mstp)
+semantic_notes:
+- 华为：stp mode rstp，中兴：spanning-tree mode rstp

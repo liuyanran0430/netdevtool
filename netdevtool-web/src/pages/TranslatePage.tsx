@@ -1,9 +1,12 @@
 import {
   ArrowRightOutlined,
   CheckCircleFilled,
+  CloseOutlined,
   CloudSyncOutlined,
   CodeOutlined,
+  CompressOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DownOutlined,
   ExclamationCircleFilled,
   ExpandAltOutlined,
@@ -13,13 +16,14 @@ import {
   HistoryOutlined,
   LinkOutlined,
   LoadingOutlined,
-  PlayCircleOutlined,
+  ReloadOutlined,
   SafetyCertificateOutlined,
   TranslationOutlined,
   UploadOutlined,
   WarningOutlined,
 } from '@ant-design/icons'
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -28,13 +32,39 @@ import {
   type MouseEvent,
   type SetStateAction,
 } from 'react'
-import { Dropdown, message, Popconfirm, Tooltip } from 'antd'
+import { Drawer, Dropdown, Input, message, Modal, Popconfirm, Tooltip } from 'antd'
 import { PageHeader } from '../components/PageHeader'
 import { StatusTag } from '../components/StatusTag'
 import { deviceTypeLabel, fetchDevices, type Device } from '../api/devices'
-import type { TranslationResult, TranslationResultLine } from '../api/translations'
+import {
+  getTranslationSource,
+  listTranslations,
+  type TranslationListItem,
+} from '../api/translations'
+import type {
+  TranslationResult,
+  TranslationResultLine,
+  TranslationTone,
+} from '../api/translations'
 import { translationSignature, useTranslationTask } from '../hooks/useTranslationTask'
-import { sourceLines, type CodeLine } from '../data/translate'
+import type { CodeLine } from '../data/translate'
+import {
+  deleteCheckpoint,
+  loadCheckpoints,
+  readSession,
+  saveCheckpoint,
+  writeSession,
+  type Checkpoint,
+} from './translate/storage'
+import {
+  buildCfgText,
+  buildReviewReport,
+  downloadText,
+  exportStamp,
+  safeFileNamePart,
+  type ExportFormat,
+} from './translate/exporters'
+import { SOURCE_ACCEPT_EXTENSIONS, useSourceConfig } from './translate/useSourceConfig'
 
 // ---------- 代码视图行高：行号、滚动对齐与点击定位共用 ----------
 
@@ -43,191 +73,9 @@ const TEXTAREA_PADDING_TOP = 4
 /** 设备数据未返回前的空列表占位，保持 useMemo 依赖稳定 */
 const EMPTY_DEVICES: Device[] = []
 
-// ---------- 源配置：导入约束 + localStorage 暂存 ----------
+// ---------- 源配置暂存 / 会话 / 检查点的 localStorage 读写已拆分至 ./translate/storage ----------
 
-const SOURCE_ACCEPT_EXTENSIONS = ['.txt', '.cfg', '.log']
-const SOURCE_MAX_BYTES = 2 * 1024 * 1024 // 2MB
-const SOURCE_LS_KEY_TEXT = 'translate:source:text'
-const SOURCE_LS_KEY_NAME = 'translate:source:fileName'
-const SOURCE_LS_KEY_TIME = 'translate:source:savedAt'
-const SOURCE_LS_TTL_MS = 24 * 60 * 60 * 1000 // 24h 过期
-
-// ---------- 翻译页会话：设备选择 + 任务 requestId 暂存 ----------
-
-const SESSION_LS_KEY = 'translate:session'
-
-interface TranslateSession {
-  deviceType: string
-  sourceVendor: string
-  sourceModel: string
-  targetVendor: string
-  targetModel: string
-  requestId: string | null
-  submittedSignature: string | null
-}
-
-function readSession(): TranslateSession | null {
-  try {
-    const raw = localStorage.getItem(SESSION_LS_KEY)
-    if (!raw) return null
-    return JSON.parse(raw) as TranslateSession
-  } catch {
-    return null
-  }
-}
-
-function writeSession(session: TranslateSession) {
-  try {
-    localStorage.setItem(SESSION_LS_KEY, JSON.stringify(session))
-  } catch {
-    // 隐私模式 / 配额满等场景下静默跳过
-  }
-}
-
-const SAMPLE_SOURCE_TEXT = sourceLines
-  .map((item) => item.parts.map((part) => part.text).join(''))
-  .join('\n')
-
-function readSourceCache(): { text: string; fileName: string } | null {
-  try {
-    const savedAt = Number(localStorage.getItem(SOURCE_LS_KEY_TIME) ?? 0)
-    if (!savedAt || Date.now() - savedAt > SOURCE_LS_TTL_MS) return null
-    const text = localStorage.getItem(SOURCE_LS_KEY_TEXT) ?? ''
-    const fileName = localStorage.getItem(SOURCE_LS_KEY_NAME) ?? ''
-    if (!text) return null
-    return { text, fileName }
-  } catch {
-    return null
-  }
-}
-
-function writeSourceCache(text: string, fileName: string): boolean {
-  try {
-    if (!text) {
-      localStorage.removeItem(SOURCE_LS_KEY_TEXT)
-      localStorage.removeItem(SOURCE_LS_KEY_NAME)
-      localStorage.removeItem(SOURCE_LS_KEY_TIME)
-      return true
-    }
-    localStorage.setItem(SOURCE_LS_KEY_TEXT, text)
-    localStorage.setItem(SOURCE_LS_KEY_NAME, fileName)
-    localStorage.setItem(SOURCE_LS_KEY_TIME, String(Date.now()))
-    return true
-  } catch {
-    // 隐私模式 / 配额满等场景下保存失败
-    return false
-  }
-}
-
-function useSourceConfig() {
-  const cached = useMemo(() => readSourceCache(), [])
-  const [text, setText] = useState<string>(cached?.text ?? SAMPLE_SOURCE_TEXT)
-  const [fileName, setFileName] = useState<string>(cached?.fileName ?? 'campus-access.cfg')
-  // 源配置暂存状态：空内容 / 已保存 / 保存失败
-  const [saveState, setSaveState] = useState<'empty' | 'saved' | 'failed'>('empty')
-
-  useEffect(() => {
-    const saved = writeSourceCache(text, fileName)
-    if (!text.trim()) setSaveState('empty')
-    else setSaveState(saved ? 'saved' : 'failed')
-  }, [text, fileName])
-
-  const importFile = (file: File) => {
-    const lower = file.name.toLowerCase()
-    if (!SOURCE_ACCEPT_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
-      message.error(`仅支持 ${SOURCE_ACCEPT_EXTENSIONS.join(' / ')} 格式`)
-      return
-    }
-    if (file.size > SOURCE_MAX_BYTES) {
-      message.error('文件超过 2MB 上限')
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const content = typeof reader.result === 'string' ? reader.result : ''
-      if (!content.trim()) {
-        message.error('文件内容为空')
-        return
-      }
-      setText(content)
-      setFileName(file.name)
-      message.success(`已导入 ${file.name}`)
-    }
-    reader.onerror = () => {
-      message.error('文件读取失败，请重试')
-    }
-    reader.readAsText(file, 'utf-8')
-  }
-
-  const clear = () => {
-    setText('')
-    setFileName('campus-access.cfg')
-  }
-
-  return { text, fileName, setText, importFile, clear, saveState }
-}
-
-// ---------- 导出：.cfg 配置与复核报告 ----------
-
-type ExportFormat = 'cfg' | 'report'
-
-const pad2 = (value: number) => String(value).padStart(2, '0')
-
-function exportStamp(date: Date) {
-  return `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}-${pad2(date.getHours())}${pad2(date.getMinutes())}`
-}
-
-function exportTimeLabel(date: Date) {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
-}
-
-function safeFileNamePart(value: string) {
-  return value.replace(/[\\/:*?"<>|\s]+/g, '-') || '未选择'
-}
-
-function downloadText(content: string, fileName: string, withBom = false) {
-  const blob = new Blob([withBom ? `\uFEFF${content}` : content], {
-    type: 'text/plain;charset=utf-8',
-  })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
-}
-
-function buildCfgText(lines: TranslationResultLine[]) {
-  // 仅输出命令本身，便于直接回灌设备；Windows 习惯使用 CRLF
-  return `${lines.map((line) => line.text).join('\r\n')}\r\n`
-}
-
-function buildReviewReport(
-  lines: TranslationResultLine[],
-  meta: { generatedAt: Date; source: string; target: string; stale: boolean },
-) {
-  const warnCount = lines.filter((line) => line.tone === 'warn').length
-  const errorCount = lines.filter((line) => line.tone === 'error').length
-  const header = [
-    '# 配置翻译复核报告',
-    `# 生成时间：${exportTimeLabel(meta.generatedAt)}`,
-    `# 设备：${meta.source} → ${meta.target}`,
-    `# 统计：共 ${lines.length} 行，需复核 ${warnCount} 行（warn），需人工处理 ${errorCount} 行（error）`,
-    ...(meta.stale ? ['# 注意：翻译结果已过期，内容基于修改前的源配置'] : []),
-    '# 说明：行尾 [需复核] / [需人工处理] 标记仅用于评审，下发前请确认',
-    '# --------------------------------------------------',
-  ]
-  const body = lines.map((line) => {
-    const mark =
-      line.tone === 'error' ? '[需人工处理]' : line.tone === 'warn' ? '[需复核]' : ''
-    if (!mark) return line.text
-    const source = line.source_no == null ? '' : ` 源行 ${line.source_no}`
-    return `${line.text}  # ${mark}${source}`
-  })
-  return `${[...header, ...body].join('\r\n')}\r\n`
-}
+// ---------- 导出工具（.cfg 配置与复核报告）已拆分至 ./translate/exporters ----------
 
 interface SelectOption {
   value: string
@@ -280,6 +128,7 @@ function TranslateToolbar({
   initialTargetModel,
   onSourceChange,
   onTargetChange,
+  onDevicesLoaded,
   onTranslate,
   onExport,
   translating = false,
@@ -293,6 +142,7 @@ function TranslateToolbar({
   initialTargetModel?: string
   onSourceChange?: (vendor: string, model: string) => void
   onTargetChange?: (vendor: string, model: string) => void
+  onDevicesLoaded?: (devices: Device[]) => void
   onTranslate?: () => void
   onExport?: (format: ExportFormat) => void
   translating?: boolean
@@ -309,7 +159,9 @@ function TranslateToolbar({
     let cancelled = false
     fetchDevices()
       .then((items) => {
-        if (!cancelled) setDevices(items)
+        if (cancelled) return
+        setDevices(items)
+        onDevicesLoaded?.(items)
       })
       .catch(() => {
         // 后端不可用时保留空列表
@@ -317,7 +169,7 @@ function TranslateToolbar({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [onDevicesLoaded])
 
   const allDevices = devices ?? EMPTY_DEVICES
   const types = useMemo(
@@ -383,6 +235,21 @@ function TranslateToolbar({
       current && targetModels.includes(current) ? current : (targetModels[0] ?? ''),
     )
   }, [devices, targetModels])
+
+  // 历史记录恢复等外部来源会直接改写设备选择，下拉内部状态需同步，
+  // 否则旧的选择会被下面的 onSourceChange / onTargetChange 回调写回父组件
+  useEffect(() => {
+    if (initialSourceVendor !== undefined) setVendor(initialSourceVendor)
+  }, [initialSourceVendor])
+  useEffect(() => {
+    if (initialSourceModel !== undefined) setModel(initialSourceModel)
+  }, [initialSourceModel])
+  useEffect(() => {
+    if (initialTargetVendor !== undefined) setTargetVendor(initialTargetVendor)
+  }, [initialTargetVendor])
+  useEffect(() => {
+    if (initialTargetModel !== undefined) setTargetModel(initialTargetModel)
+  }, [initialTargetModel])
 
   useEffect(() => {
     onSourceChange?.(vendor, model)
@@ -471,13 +338,6 @@ function TranslateToolbar({
               </button>
             </span>
           </Tooltip>
-          <button
-            type="button"
-            className="flex h-9 items-center gap-[7px] rounded-lg border border-line bg-white px-3.5 text-[13px] font-medium text-ink-900"
-          >
-            <PlayCircleOutlined className="text-[15px] text-ink-500" />
-            dry-run
-          </button>
           <Dropdown
             disabled={!hasResult}
             trigger={['click']}
@@ -578,9 +438,14 @@ function TranslateStatusRow({
 function CodeRow({
   item,
   onSelect,
+  blockActive = false,
+  dimmed = false,
 }: {
   item: CodeLine
   onSelect?: (sourceNo: number, lineNo: number) => void
+  /** 当前行属于选中映射块 */
+  blockActive?: boolean
+  dimmed?: boolean
 }) {
   const stateClass = {
     focus: 'bg-brand-soft',
@@ -591,6 +456,13 @@ function CodeRow({
   }[item.state ?? 'muted']
   // 结果行可点击：与源配置行联动高亮，再次点击已选中的行取消选中
   const selectable = Boolean(onSelect) && item.sourceNo != null
+  // 左侧竖线标示映射块，自动补齐的命令（无源行号）用虚线区分
+  const edgeClass =
+    item.sourceNo == null
+      ? 'border-dashed border-line'
+      : blockActive
+        ? 'border-brand'
+        : 'border-brand-soft'
 
   return (
     <div
@@ -599,7 +471,9 @@ function CodeRow({
       onClick={
         selectable ? () => onSelect?.(item.sourceNo as number, item.no) : undefined
       }
-      className={`flex h-6 items-center pr-2 ${stateClass} ${selectable ? 'cursor-pointer' : ''}`}
+      className={`flex h-6 items-center border-l-2 pr-2 transition-opacity ${edgeClass} ${stateClass} ${
+        dimmed ? 'opacity-50' : ''
+      } ${selectable ? 'cursor-pointer' : ''}`}
     >
       <span className="w-[38px] shrink-0 select-none text-right font-mono text-[11px] leading-none text-ink-300">
         {item.no}
@@ -636,7 +510,6 @@ function SourceEditor({
   focusLine,
   onSelectLine,
   onCursorChange,
-  scrollTo,
 }: {
   value: string
   onChange: (next: string) => void
@@ -644,24 +517,10 @@ function SourceEditor({
   focusLine?: number | null
   onSelectLine?: (sourceNo: number, lineNo?: number) => void
   onCursorChange?: (position: { line: number; column: number }) => void
-  /** 由结果侧选中触发，把指定源行滚动到可视区中央 */
-  scrollTo?: { line: number; token: number } | null
 }) {
   const [scrollTop, setScrollTop] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const lineCount = Math.max(1, value.split('\n').length)
-
-  useEffect(() => {
-    const area = textareaRef.current
-    if (!scrollTo || !area) return
-    const line = Math.min(Math.max(1, scrollTo.line), lineCount)
-    // 目标行居中：行高与顶部内边距需与行号列保持一致
-    const top = (line - 1) * LINE_HEIGHT + TEXTAREA_PADDING_TOP - area.clientHeight / 2 + 12
-    area.scrollTop = Math.max(0, top)
-    setScrollTop(area.scrollTop)
-    // 仅在新的滚动请求（token 变化）时执行，避免输入时反复跳动
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollTo?.token])
 
   const markAt = (lineNo: number) => marks?.get(lineNo)
   const bgOf = (tone?: 'warn' | 'error') =>
@@ -710,17 +569,43 @@ function SourceEditor({
             ))}
           </div>
         </div>
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 right-2 w-4 overflow-hidden pt-1"
-        >
+        <textarea
+          ref={textareaRef}
+          data-scroll="source"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+          onSelect={(event) => reportCursor(event.currentTarget)}
+          onKeyUp={(event) => reportCursor(event.currentTarget)}
+          wrap="off"
+          spellCheck={false}
+          placeholder="粘贴或导入设备配置…"
+          className="thin-scrollbar relative h-full min-h-[280px] w-full flex-1 resize-none bg-transparent py-1 pl-3 pr-6 font-mono text-[12px] leading-6 text-ink-900 outline-none placeholder:text-ink-300"
+        />
+        {/* 选中映射时弱化非关联行，突出当前源行 */}
+        {focusLine != null ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 overflow-hidden pt-1"
+          >
+            <div style={{ transform: `translateY(-${scrollTop}px)` }}>
+              {Array.from({ length: lineCount }, (_, index) => (
+                <div
+                  key={index}
+                  className={`h-6 ${index + 1 === focusLine ? '' : 'bg-white/60'}`}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div className="pointer-events-none absolute inset-y-0 right-2 w-10 overflow-hidden pt-1">
           <div style={{ transform: `translateY(-${scrollTop}px)` }}>
             {Array.from({ length: lineCount }, (_, index) => {
               const lineNo = index + 1
               const tone = markAt(lineNo)
               const focused = lineNo === focusLine
               return (
-                <div key={index} className="flex h-6 items-center justify-center">
+                <div key={index} className="flex h-6 items-center justify-end gap-1">
                   {tone === 'warn' ? (
                     <WarningOutlined className="text-[11px] text-warn" />
                   ) : tone === 'error' ? (
@@ -733,18 +618,6 @@ function SourceEditor({
             })}
           </div>
         </div>
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-          onSelect={(event) => reportCursor(event.currentTarget)}
-          onKeyUp={(event) => reportCursor(event.currentTarget)}
-          wrap="off"
-          spellCheck={false}
-          placeholder="粘贴或导入设备配置…"
-          className="thin-scrollbar relative h-full min-h-[280px] w-full flex-1 resize-none bg-transparent py-1 pl-3 pr-6 font-mono text-[12px] leading-6 text-ink-900 outline-none placeholder:text-ink-300"
-        />
       </div>
     </div>
   )
@@ -793,9 +666,14 @@ interface ConfigPanelProps {
   sourceMarks?: Map<number, 'warn' | 'error'>
   focusLine?: number | null
   onSelectLine?: (sourceNo: number, lineNo?: number) => void
-  /** 滚动对齐请求：source 面板按源行滚动，target 面板按源行或结果行滚动 */
-  scrollTo?: { line: number; token: number } | null
   detail?: PanelDetail
+  /** 本面板处于放大态（图标与 aria-label 切换） */
+  expanded?: boolean
+  /** 对侧面板放大时隐藏本面板（display:none，保留 DOM 与滚动位置） */
+  hidden?: boolean
+  onToggleExpand?: () => void
+  /** 翻译结果侧复制按钮 */
+  onCopy?: () => void
 }
 
 function ConfigPanel({
@@ -819,39 +697,20 @@ function ConfigPanel({
   sourceMarks,
   focusLine,
   onSelectLine,
-  scrollTo,
   detail,
+  expanded = false,
+  hidden = false,
+  onToggleExpand,
+  onCopy,
 }: ConfigPanelProps) {
   const isSource = variant === 'source'
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const resultListRef = useRef<HTMLDivElement>(null)
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
 
-  const displayLines: CodeLine[] = useMemo(() => {
-    if (!isSource) return resultLines ?? []
-    if (!sourceText) return sourceLines
-    return sourceText.split('\n').map((text, idx) => ({
-      no: idx + 1,
-      parts: [{ text: text.replace(/\r$/, '') }],
-    }))
-  }, [isSource, sourceText, resultLines])
-
-  // 结果面板：把命中的源行（或指定结果行）滚动到可视区中央
-  useEffect(() => {
-    const container = resultListRef.current
-    if (isSource || !scrollTo || !container) return
-    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-row]'))
-    const target =
-      rows.find((row) => row.dataset.sourceNo === String(scrollTo.line)) ??
-      rows.find((row) => row.dataset.row === String(scrollTo.line))
-    if (!target) return
-    container.scrollTop = Math.max(
-      0,
-      target.offsetTop - container.clientHeight / 2 + target.clientHeight / 2,
-    )
-    // 仅在新的滚动请求（token 变化）时执行
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSource, scrollTo?.token])
+  const displayLines: CodeLine[] = useMemo(
+    () => (isSource ? [] : resultLines ?? []),
+    [isSource, resultLines],
+  )
 
   const sourceDeviceLabel =
     sourceVendor && sourceModel ? `${sourceVendor} · ${sourceModel}` : '未选择源设备'
@@ -859,19 +718,15 @@ function ConfigPanel({
   const targetDeviceLabel =
     targetVendor && targetModel ? `${targetVendor} · ${targetModel}` : '未选择目标设备'
 
-  const displayFileName = isSource
-    ? sourceFileName ?? 'campus-access.cfg'
-    : targetDeviceLabel
+  const displayFileName = isSource ? sourceFileName || '未导入文件' : targetDeviceLabel
 
   const sourceLineCount = sourceText ? sourceText.split('\n').length : 0
   const sourceStatusText =
     sourceLineCount === 0
       ? '暂无内容'
-      : sourceText === SAMPLE_SOURCE_TEXT
-        ? `示例配置 · 共 ${sourceLineCount} 行`
-        : sourceSaveState === 'failed'
-          ? `未能暂存 · 共 ${sourceLineCount} 行`
-          : `已暂存 · 共 ${sourceLineCount} 行`
+      : sourceSaveState === 'failed'
+        ? `未能暂存 · 共 ${sourceLineCount} 行`
+        : `已暂存 · 共 ${sourceLineCount} 行`
 
   const targetStatusText =
     warnCount === 0 && errorCount === 0
@@ -894,7 +749,10 @@ function ConfigPanel({
   )
 
   return (
-    <section className="flex min-w-0 flex-none flex-col rounded-panel border border-line bg-white xl:h-[700px] xl:flex-1">
+    <section
+      className="flex min-w-0 flex-none flex-col rounded-panel border border-line bg-white xl:h-[700px] xl:flex-1"
+      style={hidden ? { display: 'none' } : undefined}
+    >
       <div className="flex h-[54px] shrink-0 items-center justify-between border-b border-line px-[18px]">
         <div className="flex items-center gap-2.5">
           {isSource ? (
@@ -941,12 +799,20 @@ function ConfigPanel({
               )}
             </>
           ) : (
-            <button type="button" aria-label="复制">
+            <button type="button" aria-label="复制" onClick={onCopy}>
               <CopyOutlined className="text-[15px]" />
             </button>
           )}
-          <button type="button" aria-label="全屏">
-            <ExpandAltOutlined className="text-[15px]" />
+          <button
+            type="button"
+            aria-label={expanded ? '退出放大' : '放大'}
+            onClick={onToggleExpand}
+          >
+            {expanded ? (
+              <CompressOutlined className="text-[15px]" />
+            ) : (
+              <ExpandAltOutlined className="text-[15px]" />
+            )}
           </button>
         </div>
       </div>
@@ -976,7 +842,6 @@ function ConfigPanel({
           focusLine={focusLine}
           onSelectLine={onSelectLine}
           onCursorChange={setCursor}
-          scrollTo={scrollTo}
         />
       ) : generating ? (
         <div className="flex min-h-[280px] flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
@@ -985,9 +850,15 @@ function ConfigPanel({
           <span className="text-[11px] text-ink-300">后端任务执行中，完成后自动展示</span>
         </div>
       ) : translated ? (
-        <div ref={resultListRef} className="thin-scrollbar relative min-h-[280px] flex-1 overflow-auto py-1">
+        <div data-scroll="result" className="thin-scrollbar relative min-h-[280px] flex-1 overflow-auto py-1">
           {displayLines.map((item, index) => (
-            <CodeRow key={`${item.no}-${index}`} item={item} onSelect={onSelectLine} />
+            <CodeRow
+              key={`${item.no}-${index}`}
+              item={item}
+              onSelect={onSelectLine}
+              blockActive={focusLine != null && item.sourceNo === focusLine}
+              dimmed={focusLine != null && item.sourceNo !== focusLine}
+            />
           ))}
         </div>
       ) : (
@@ -1000,20 +871,21 @@ function ConfigPanel({
         </div>
       )}
 
-      <div className="m-3 shrink-0 rounded-lg border border-line bg-soft px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-ink-900">
-            <LinkOutlined className="shrink-0 text-[11px] text-brand" />
-            <span className="truncate">{detail?.title ?? '点击任意行查看映射详情'}</span>
-          </span>
-          {detail?.tag ? (
-            <StatusTag tone={detail.tag.tone}>{detail.tag.text}</StatusTag>
-          ) : null}
+      {/* 未选中行时整块隐藏，不保留占位内容 */}
+      {detail ? (
+        <div className="m-3 shrink-0 rounded-lg border border-line bg-soft px-3 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-ink-900">
+              <LinkOutlined className="shrink-0 text-[11px] text-brand" />
+              <span className="truncate">{detail.title}</span>
+            </span>
+            {detail.tag ? <StatusTag tone={detail.tag.tone}>{detail.tag.text}</StatusTag> : null}
+          </div>
+          <p className="mt-1.5 truncate text-[11px] leading-[1.6] text-ink-500">
+            {detail.description}
+          </p>
         </div>
-        <p className="mt-1.5 truncate text-[11px] leading-[1.6] text-ink-500">
-          {detail?.description ?? '选中行后，这里显示该行的映射说明。'}
-        </p>
-      </div>
+      ) : null}
 
       <div className="flex h-[26px] shrink-0 items-center justify-between border-t border-line px-3 text-[10px] text-ink-400">
         <span>
@@ -1043,10 +915,24 @@ interface WarningGroup {
 const WARNING_LABELS: Record<string, string> = {
   unknown_command: '未识别的命令',
   intf_unmapped: '接口名未做厂商映射',
+  intf_translated: '接口前缀已按厂商规则转换',
   unsupported_entity: '目标设备不支持',
   invalid_param: '参数校验失败',
   unverified_impl: '目标实现未验证',
   low_confidence: '实现置信度偏低',
+}
+
+// 翻译记录卡片中的单侧设备信息
+function HistoryDeviceLine({ label, vendor, model }: { label: string; vendor: string; model: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 rounded bg-soft px-1.5 py-[1px] text-[10px] text-ink-500">{label}</span>
+      <span className="shrink-0 text-[12px] font-medium text-ink-700">{vendor}</span>
+      <span className="min-w-0 truncate font-mono text-[12px] text-ink-500" title={model}>
+        {model}
+      </span>
+    </div>
+  )
 }
 
 function summarizeAudit(lines: TranslationResultLine[] | undefined) {
@@ -1067,14 +953,67 @@ function summarizeAudit(lines: TranslationResultLine[] | undefined) {
   return stats
 }
 
+// 选中结果行时，审计面板「检查结果」区的数据
+interface AuditReview {
+  /** 结果行序号，用于同步文本框草稿 */
+  key: number
+  /** 处理提示（warn / error 行取详情副标题） */
+  hint?: string
+  command: string
+  tone: 'success' | 'warn' | 'error'
+  /** 高置信度行的判定依据 */
+  reason?: string
+  onAccept?: () => void
+  onAcceptEdited?: (text: string) => void
+  onDefer?: () => void
+}
+
 function AuditPanel({
   result,
+  lines,
+  review,
+  checkpoints,
+  canCreateCheckpoint,
   onSelectLine,
+  onCreateCheckpoint,
+  onRestoreCheckpoint,
+  onDeleteCheckpoint,
 }: {
   result: TranslationResult | null
+  lines: TranslationResultLine[]
+  review?: AuditReview | null
+  checkpoints: Checkpoint[]
+  canCreateCheckpoint: boolean
   onSelectLine?: (lineNo: number) => void
+  onCreateCheckpoint?: () => void
+  onRestoreCheckpoint?: (checkpoint: Checkpoint) => void
+  onDeleteCheckpoint?: (id: string) => void
 }) {
-  const stats = useMemo(() => summarizeAudit(result?.lines), [result])
+  const stats = useMemo(() => summarizeAudit(lines), [lines])
+  // 文本框始终可编辑，切换选中行时同步为该行命令
+  const [draft, setDraft] = useState('')
+  // 检查点列表折叠状态
+  const [checkpointsOpen, setCheckpointsOpen] = useState(false)
+  useEffect(() => {
+    setDraft(review?.command ?? '')
+  }, [review?.key, review?.command])
+
+  const dirty = review != null && draft.trim() !== review.command.trim()
+  const handleAccept = () => {
+    if (!review) return
+    // 文本被改过时直接采纳会丢失修改，提示改用「修改后采纳」
+    if (dirty) {
+      message.warning('配置已修改，请点击「修改后采纳」保存修改')
+      return
+    }
+    review.onAccept?.()
+  }
+  const handleAcceptEdited = () => {
+    if (!review) return
+    const text = draft.trim()
+    if (!text) return
+    review.onAcceptEdited?.(text)
+  }
   // 按 code 聚合行级 warnings，一类问题一条
   const groups = useMemo(() => {
     const map = new Map<string, WarningGroup>()
@@ -1107,7 +1046,13 @@ function AuditPanel({
           <SafetyCertificateOutlined className="text-[16px] text-brand-strong" />
           <span className="text-[14px] font-bold text-ink-900">审计面板</span>
         </div>
-        <StatusTag tone="warn">待复核</StatusTag>
+        {stats.total === 0 ? (
+          <StatusTag tone="gray">待生成</StatusTag>
+        ) : stats.medium + stats.low > 0 ? (
+          <StatusTag tone="warn">待复核 {stats.medium + stats.low}</StatusTag>
+        ) : (
+          <StatusTag tone="green">全部通过</StatusTag>
+        )}
       </div>
 
       <div className="thin-scrollbar flex-1 space-y-4 overflow-y-auto px-[18px] pb-4 pt-4">
@@ -1229,28 +1174,180 @@ function AuditPanel({
 
         <div className="space-y-2.5">
           <span className="text-[13px] font-bold text-ink-900">检查结果</span>
-          <div className="flex gap-2.5">
-            <span className="flex h-8 flex-1 items-center justify-center rounded-md bg-success-soft text-[11px] text-success">
-              语法 ✓
-            </span>
-            <span className="flex h-8 flex-1 items-center justify-center rounded-md bg-success-soft text-[11px] text-success">
-              视图 ✓
-            </span>
-          </div>
+          {review ? (
+            review.tone === 'success' ? (
+              // 高置信度行：只给通过结论与判定依据，不提供操作按钮
+              <div className="space-y-2">
+                <div className="flex h-8 items-center gap-1.5 rounded-md bg-success-soft px-2.5 text-[11px] font-medium text-success">
+                  <CheckCircleFilled className="text-[12px]" />
+                  高置信度 · 无需人工处理
+                </div>
+                <p className="text-[11px] leading-[1.6] text-ink-500">
+                  {review.reason ?? '知识库命令模板确定，未发现参数或映射告警'}
+                </p>
+                <input
+                  value={review.command}
+                  readOnly
+                  className="h-9 w-full rounded-md border border-line bg-soft px-2.5 font-mono text-[11px] text-ink-700"
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-[11px] leading-[1.6] text-ink-500">
+                  {review.hint || '该行建议人工确认'}
+                </p>
+                <input
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  className="h-9 w-full rounded-md border border-brand-line bg-white px-2.5 font-mono text-[11px] text-ink-900 outline-none focus:border-brand"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAccept}
+                    className="flex h-8 flex-1 items-center justify-center rounded-md bg-success text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+                  >
+                    采纳
+                  </button>
+                  <Popconfirm
+                    title="确认按修改后的配置采纳？"
+                    description="采纳后该行置信度将标记为高。"
+                    okText="确认采纳"
+                    cancelText="取消"
+                    onConfirm={handleAcceptEdited}
+                    disabled={!draft.trim()}
+                  >
+                    <button
+                      type="button"
+                      disabled={!draft.trim()}
+                      className="flex h-8 flex-1 items-center justify-center rounded-md border border-success-line bg-success-soft text-[11px] font-medium text-success transition-colors hover:border-success disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      修改后采纳
+                    </button>
+                  </Popconfirm>
+                  <button
+                    type="button"
+                    onClick={review.onDefer}
+                    className="flex h-8 flex-1 items-center justify-center rounded-md border border-line bg-white text-[11px] text-ink-500 transition-colors hover:bg-soft"
+                  >
+                    暂不处理
+                  </button>
+                </div>
+              </div>
+            )
+          ) : result ? (
+            stats.medium + stats.low > 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const first = lines.find(
+                    (item) =>
+                      item.source_no != null && (item.tone === 'warn' || item.tone === 'error'),
+                  )
+                  if (first?.source_no != null) onSelectLine?.(first.source_no)
+                }}
+                className="flex h-8 w-full items-center justify-center rounded-md bg-warn-soft text-[11px] text-warn transition-colors hover:bg-warn-soft/70"
+              >
+                待处理 {stats.medium + stats.low} 行 · 已通过 {stats.high} 行
+              </button>
+            ) : (
+              <div className="flex h-8 items-center justify-center gap-1.5 rounded-md bg-success-soft text-[11px] text-success">
+                <CheckCircleFilled className="text-[12px]" />
+                全部高置信度，无需复核
+              </div>
+            )
+          ) : (
+            <p className="text-[10px] leading-[1.6] text-ink-400">
+              生成翻译结果后显示检查项
+            </p>
+          )}
         </div>
       </div>
 
       <div className="shrink-0 space-y-2 border-t border-line px-[18px] py-3.5">
-        <button
-          type="button"
-          className="flex h-9 w-full items-center justify-center gap-[7px] rounded-lg border border-brand-line bg-white text-[13px] font-medium text-brand-strong"
+        <Tooltip
+          title={canCreateCheckpoint ? '保存当前已处理的审计结果，可随时恢复' : '暂无已处理行，无法生成检查点'}
+          placement="top"
         >
-          <FlagOutlined className="text-[14px]" />
-          生成检查点
-        </button>
+          <span className="w-full">
+            <button
+              type="button"
+              disabled={!canCreateCheckpoint}
+              onClick={onCreateCheckpoint}
+              className={`flex h-9 w-full items-center justify-center gap-[7px] rounded-lg border text-[13px] font-medium transition-colors ${
+                canCreateCheckpoint
+                  ? 'border-brand-line bg-white text-brand-strong hover:bg-brand-soft'
+                  : 'cursor-not-allowed border-line bg-soft text-ink-300'
+              }`}
+            >
+              <FlagOutlined className="text-[14px]" />
+              生成检查点
+            </button>
+          </span>
+        </Tooltip>
         <p className="text-center text-[10px] leading-[1.5] text-ink-400">
           保存当前配置、映射关系与审计结果
         </p>
+        {checkpoints.length > 0 ? (
+          <div className="space-y-1.5 pt-1">
+            <button
+              type="button"
+              onClick={() => setCheckpointsOpen((v) => !v)}
+              className="flex h-7 w-full items-center justify-between rounded px-1 text-[11px] text-ink-500 hover:bg-soft"
+            >
+              <span>检查点记录（{checkpoints.length}）</span>
+              <DownOutlined
+                className={`text-[10px] transition-transform ${checkpointsOpen ? 'rotate-0' : '-rotate-90'}`}
+              />
+            </button>
+            {checkpointsOpen ? (
+              <div className="thin-scrollbar max-h-44 space-y-1.5 overflow-y-auto">
+                {checkpoints.map((cp) => {
+                  const reviewed = Object.values(cp.reviews)
+                  const edited = reviewed.filter((r) => r.text != null).length
+                  const accepted = reviewed.length - edited
+                  const time = new Date(cp.createdAt).toLocaleTimeString('zh-CN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                  return (
+                    <div
+                      key={cp.id}
+                      className="flex items-center justify-between gap-2 rounded-md border border-line bg-white px-2.5 py-1.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] text-ink-700">
+                          {cp.name}
+                        </div>
+                        <div className="text-[10px] text-ink-400">
+                          {time} · 已采纳 {accepted} · 已修改 {edited}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1 text-ink-400">
+                        <button
+                          type="button"
+                          aria-label="恢复检查点"
+                          onClick={() => onRestoreCheckpoint?.(cp)}
+                          className="flex h-6 w-6 items-center justify-center rounded hover:bg-brand-soft hover:text-brand"
+                        >
+                          <HistoryOutlined className="text-[12px]" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="删除检查点"
+                          onClick={() => onDeleteCheckpoint?.(cp.id)}
+                          className="flex h-6 w-6 items-center justify-center rounded hover:bg-danger-soft hover:text-danger"
+                        >
+                          <DeleteOutlined className="text-[12px]" />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   )
@@ -1268,18 +1365,154 @@ export function TranslatePage() {
     vendor: cachedSession?.targetVendor ?? '',
     model: cachedSession?.targetModel ?? '',
   })
+  // 设备档案：历史恢复时按厂商 + 型号反查设备类型，保证类型与设备选择一致
+  const devicesRef = useRef<Device[] | null>(null)
   // 选中的源配置行与结果行：两侧同时高亮为 focus，底部详情卡片同步更新
   const [selection, setSelection] = useState<{ sourceNo: number; lineNo: number | null } | null>(
     null,
   )
-  // 选中来源对应的滚动对齐请求，token 保证重复选中同一行也能重新滚动
+  // 选中行两侧的滚动对齐请求：sourceLine 为源行，targetRow 为结果行（为空时取该源行首行）
   const [align, setAlign] = useState<{
-    source?: number
-    result?: number
+    sourceLine?: number
+    targetRow?: number
     token: number
   } | null>(null)
   const { status, result, requestId, error, submittedSignature, start, resume, reset } =
     useTranslationTask()
+  // 审计处理结果：结果行序号 → 覆盖后的 tone 与文本（采纳 / 修改后采纳）
+  const [reviews, setReviews] = useState<
+    Map<number, { tone: TranslationTone; text?: string }>
+  >(new Map())
+  // 当前翻译任务的检查点列表（本地快照）
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
+  // 生成检查点弹框
+  const [checkpointModalOpen, setCheckpointModalOpen] = useState(false)
+  const [checkpointName, setCheckpointName] = useState('')
+  // 翻译历史记录抽屉
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyItems, setHistoryItems] = useState<TranslationListItem[]>([])
+  // 面板放大：source / result 互斥展开，null 为默认双栏
+  const [expandedPanel, setExpandedPanel] = useState<'source' | 'result' | null>(null)
+  useEffect(() => {
+    setCheckpoints(loadCheckpoints(requestId))
+  }, [requestId])
+
+  const toggleExpandedPanel = (panel: 'source' | 'result') =>
+    setExpandedPanel((cur) => (cur === panel ? null : panel))
+
+  // 复制翻译结果：与导出保持一致，使用人工处理后的行
+  const handleCopyResult = async () => {
+    const text = reviewedLines.map((line) => line.text).join('\n')
+    if (!text) {
+      message.warning('暂无可复制的翻译结果')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      message.success('已复制翻译结果')
+    } catch {
+      message.error('复制失败，请手动选择复制')
+    }
+  }
+
+  const openCheckpointModal = () => {
+    setCheckpointName(`检查点 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`)
+    setCheckpointModalOpen(true)
+  }
+  const handleCreateCheckpoint = () => {
+    if (!requestId) return
+    setCheckpoints(saveCheckpoint(requestId, checkpointName, reviews))
+    setCheckpointModalOpen(false)
+    message.success('检查点已保存')
+  }
+  const handleRestoreCheckpoint = (cp: Checkpoint) => {
+    const next = new Map<number, { tone: TranslationTone; text?: string }>()
+    for (const [key, override] of Object.entries(cp.reviews)) {
+      next.set(Number(key), { tone: override.tone as TranslationTone, text: override.text })
+    }
+    setReviews(next)
+    setSelection(null)
+    setAlign(null)
+    message.success('已恢复检查点')
+  }
+  const handleDeleteCheckpoint = (id: string) => {
+    if (!requestId) return
+    setCheckpoints(deleteCheckpoint(requestId, id))
+  }
+
+  const loadHistory = async () => {
+    setHistoryLoading(true)
+    try {
+      setHistoryItems(await listTranslations(30))
+    } catch {
+      message.error('加载翻译记录失败')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+  const handleOpenHistory = () => {
+    setHistoryOpen(true)
+    void loadHistory()
+  }
+  const handleRestoreHistory = async (item: TranslationListItem) => {
+    try {
+      const src = await getTranslationSource(item.request_id)
+      const matched =
+        devicesRef.current?.find(
+          (device) =>
+            device.vendor === src.source_vendor && device.model === src.source_model,
+        ) ??
+        devicesRef.current?.find(
+          (device) =>
+            device.vendor === src.target_vendor && device.model === src.target_model,
+        )
+      if (matched) setDeviceType(matched.device_type)
+      setSourceDevice({ vendor: src.source_vendor, model: src.source_model })
+      setTargetDevice({ vendor: src.target_vendor, model: src.target_model })
+      source.setText(src.source_text)
+      const signature = translationSignature({
+        source_text: src.source_text,
+        source_vendor: src.source_vendor,
+        source_model: src.source_model,
+        target_vendor: src.target_vendor,
+        target_model: src.target_model,
+      })
+      setReviews(new Map())
+      setCheckpoints(loadCheckpoints(item.request_id))
+      setSelection(null)
+      setAlign(null)
+      resume(item.request_id, signature)
+      setHistoryOpen(false)
+      message.success('已恢复历史翻译')
+    } catch {
+      message.error('恢复历史翻译失败，请重试')
+    }
+  }
+  // 稳定的回调引用：避免每次渲染都触发下拉组件的同步 effect，把历史恢复的设备选择覆盖回去
+  const handleSourceDeviceChange = useCallback((vendor: string, model: string) => {
+    setSourceDevice((prev) =>
+      prev.vendor === vendor && prev.model === model ? prev : { vendor, model },
+    )
+  }, [])
+  const handleTargetDeviceChange = useCallback((vendor: string, model: string) => {
+    setTargetDevice((prev) =>
+      prev.vendor === vendor && prev.model === model ? prev : { vendor, model },
+    )
+  }, [])
+  const handleDevicesLoaded = useCallback((items: Device[]) => {
+    devicesRef.current = items
+  }, [])
+
+  // 合并人工处理结果后的行视图，供展示、统计与导出共用
+  const reviewedLines = useMemo<TranslationResultLine[]>(() => {
+    if (!result) return []
+    return result.lines.map((line, index) => {
+      const review = reviews.get(index)
+      if (!review) return line
+      return { ...line, tone: review.tone, text: review.text ?? line.text }
+    })
+  }, [result, reviews])
 
   // 回到本页时按已保存的 requestId 从后端恢复结果（避免把大结果写进 localStorage）
   useEffect(() => {
@@ -1331,7 +1564,7 @@ export function TranslatePage() {
 
   const targetResultLines = useMemo<CodeLine[]>(
     () =>
-      result?.lines.map((item, index) => {
+      reviewedLines.map((item, index) => {
         const focused = selection !== null && item.source_no === selection.sourceNo
         // warn / error 行保持原图标，success / muted 行聚焦后换成链接图标
         const baseIcon: CodeLine['icon'] =
@@ -1343,21 +1576,20 @@ export function TranslatePage() {
           icon: baseIcon ?? (focused ? 'link' : undefined),
           sourceNo: item.source_no,
         }
-      }) ?? [],
-    [result, selection],
+      }),
+    [reviewedLines, selection],
   )
 
-  // 新的翻译结果到达后清除选中
+  // 新的翻译结果到达后清除选中与人工处理记录
   useEffect(() => {
     setSelection(null)
     setAlign(null)
+    setReviews(new Map())
   }, [result])
 
-  const handleSelectLine = (
-    sourceNo: number,
-    lineNo?: number,
-    origin: 'source' | 'result' | 'audit' = 'result',
-  ) => {
+  const handleSelectLine = (sourceNo: number, lineNo?: number) => {
+    // 结果已过期时禁用选中高亮，避免误导为当前结果的核对状态
+    if (stale) return
     const toggling =
       selection !== null &&
       selection.sourceNo === sourceNo &&
@@ -1368,27 +1600,52 @@ export function TranslatePage() {
       return
     }
     setSelection({ sourceNo, lineNo: lineNo ?? null })
-    // 点击源行本身不滚动源面板，避免光标定位时页面跳动；其余来源对侧滚动到可视区中央
-    setAlign({
-      source: origin === 'source' ? undefined : sourceNo,
-      result: origin === 'result' ? undefined : (lineNo ?? sourceNo),
-      token: Date.now(),
-    })
+    // 两侧滚动到同一高度，使源行与其对应的结果行水平对齐
+    setAlign({ sourceLine: sourceNo, targetRow: lineNo, token: Date.now() })
   }
 
-  // 滚动目标保持引用稳定，避免每次渲染都重新滚动
-  const sourceScroll = useMemo(
-    () => (align?.result != null ? { line: align.result, token: align.token } : null),
-    [align],
-  )
-  const targetScroll = useMemo(
-    () => (align?.source != null ? { line: align.source, token: align.token } : null),
-    [align],
-  )
+  // 选中行对齐：取两个面板都能达到的共同高度，再分别把目标行滚动到该位置
+  useEffect(() => {
+    if (align?.sourceLine == null) return
+    const { sourceLine, targetRow } = align
+    const frame = requestAnimationFrame(() => {
+      const sourceEl = document.querySelector<HTMLTextAreaElement>('[data-scroll="source"]')
+      const resultEl = document.querySelector<HTMLElement>('[data-scroll="result"]')
+      if (!sourceEl || !resultEl) return
+      const row =
+        (targetRow != null
+          ? resultEl.querySelector<HTMLElement>(`[data-row="${targetRow}"]`)
+          : null) ??
+        resultEl.querySelector<HTMLElement>(`[data-source-no="${sourceLine}"]`)
+      if (!row) return
+      // 两行在各自滚动内容中的起点（含顶部内边距，保持口径一致）
+      const sourceTop = (sourceLine - 1) * LINE_HEIGHT + TEXTAREA_PADDING_TOP
+      const rowTop =
+        row.getBoundingClientRect().top -
+        resultEl.getBoundingClientRect().top +
+        resultEl.scrollTop
+      const sourceMax = Math.max(0, sourceEl.scrollHeight - sourceEl.clientHeight)
+      const resultMax = Math.max(0, resultEl.scrollHeight - resultEl.clientHeight)
+      // 面板内容不足时无法居中，取两侧都能满足的可行高度区间，尽量靠近中线
+      const low = Math.max(0, sourceTop - sourceMax, rowTop - resultMax)
+      const high = Math.min(
+        sourceTop,
+        rowTop,
+        sourceEl.clientHeight - LINE_HEIGHT,
+        resultEl.clientHeight - LINE_HEIGHT,
+      )
+      const center =
+        Math.min(sourceEl.clientHeight, resultEl.clientHeight) / 2 - LINE_HEIGHT / 2
+      const anchor = high >= low ? Math.min(Math.max(center, low), high) : low
+      sourceEl.scrollTop = Math.max(0, sourceTop - anchor)
+      resultEl.scrollTop = Math.max(0, rowTop - anchor)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [align])
 
   const sourceMarks = useMemo(() => {
     const marks = new Map<number, 'warn' | 'error'>()
-    for (const item of result?.lines ?? []) {
+    for (const item of reviewedLines) {
       if (item.source_no === null || item.source_no === undefined) continue
       if (item.tone !== 'warn' && item.tone !== 'error') continue
       // 同一源行命中多行时取更严重的级别
@@ -1396,17 +1653,17 @@ export function TranslatePage() {
       marks.set(item.source_no, item.tone)
     }
     return marks
-  }, [result])
+  }, [reviewedLines])
 
   const resultStats = useMemo(() => {
     let warn = 0
     let error = 0
-    for (const item of result?.lines ?? []) {
+    for (const item of reviewedLines) {
       if (item.tone === 'warn') warn += 1
       else if (item.tone === 'error') error += 1
     }
     return { warn, error }
-  }, [result])
+  }, [reviewedLines])
 
   const stale = useMemo(() => {
     if (!translated || submittedSignature === null) return false
@@ -1419,6 +1676,13 @@ export function TranslatePage() {
     })
     return current !== submittedSignature
   }, [translated, submittedSignature, source.text, sourceDevice, targetDevice])
+
+  // 结果转为过期时清空已有选中，避免残留高亮
+  useEffect(() => {
+    if (!stale) return
+    setSelection(null)
+    setAlign(null)
+  }, [stale])
 
   const entityDescriptions = useMemo(() => {
     const map = new Map<string, string | null>()
@@ -1442,7 +1706,7 @@ export function TranslatePage() {
     const lineNo = selection.sourceNo
     const lines = source.text ? source.text.split('\n').map((line) => line.replace(/\r$/, '')) : []
     const text = (lines[lineNo - 1] ?? '').trim()
-    const mapped = (result?.lines ?? []).filter((item) => item.source_no === lineNo)
+    const mapped = reviewedLines.filter((item) => item.source_no === lineNo)
     const entityId = mapped.find((item) => item.entity_id)?.entity_id ?? null
     const legacy = result !== null && result.entities === undefined
     const description = entityId
@@ -1471,7 +1735,7 @@ export function TranslatePage() {
       description,
       tag: severity ? TONE_TAG[severity] : undefined,
     }
-  }, [selection, source.text, result, entityDescriptions])
+  }, [selection, source.text, result, reviewedLines, entityDescriptions])
 
   // 目的侧详情：显示选中结果行的行级 warnings
   const targetDetail = useMemo<PanelDetail | undefined>(() => {
@@ -1482,7 +1746,7 @@ export function TranslatePage() {
         description: '生成翻译结果后，这里显示目标命令与复核提示。',
       }
     }
-    const lines = result.lines
+    const lines = reviewedLines
     // 后端 no 是源配置行号，可能重复；按结果行序号（界面上显示的 L 编号）定位
     const index =
       selection.lineNo != null
@@ -1495,20 +1759,99 @@ export function TranslatePage() {
         description: '该源配置行未产出翻译结果。',
       }
     }
+    const review = reviews.get(index)
     // 优先按源行号匹配；旧渲染器的视图行 warning 挂在触发命令行上，回退到结果行号
     let messages = line.source_no == null ? [] : (warningMap.get(line.source_no) ?? [])
     if (messages.length === 0) messages = warningMap.get(line.no) ?? []
-    const description = messages.length
-      ? messages.join('；')
-      : line.source_no == null
-        ? '渲染器自动补齐的命令，非源配置内容'
-        : (TONE_FALLBACK[line.tone] ?? '无需复核')
+    const description = review
+      ? review.text != null
+        ? '已人工修改并采纳，置信度标记为高'
+        : '已人工采纳，置信度标记为高'
+      : messages.length
+        ? messages.join('；')
+        : line.source_no == null
+          ? '渲染器自动补齐的命令，非源配置内容'
+          : (TONE_FALLBACK[line.tone] ?? '无需复核')
     return {
       title: `L${index + 1} · ${line.text.trim() || '空行'}`,
       description,
       tag: TONE_TAG[line.tone],
     }
-  }, [selection, result, warningMap])
+  }, [selection, result, reviewedLines, warningMap, reviews])
+
+  // 采纳后自动定位到下一处待处理行：先向后找，到末尾回到开头
+  const advanceAfterReview = (from: number) => {
+    const order = [
+      ...reviewedLines.map((_, index) => index).slice(from + 1),
+      ...reviewedLines.map((_, index) => index).slice(0, from),
+    ]
+    const next = order.find((index) => {
+      const item = reviewedLines[index]
+      return item.source_no != null && (item.tone === 'warn' || item.tone === 'error')
+    })
+    const line = next == null ? undefined : reviewedLines[next]
+    if (next == null || !line || line.source_no == null) {
+      setSelection(null)
+      setAlign(null)
+      return
+    }
+    setSelection({ sourceNo: line.source_no, lineNo: next + 1 })
+    setAlign({ sourceLine: line.source_no, targetRow: next + 1, token: Date.now() })
+  }
+
+  // 选中 warn / error 行时，审计面板进入人工处理模式
+  const reviewTarget = useMemo<AuditReview | null>(() => {
+    if (!selection || !result) return null
+    let index =
+      selection.lineNo != null
+        ? selection.lineNo - 1
+        : reviewedLines.findIndex((item) => item.source_no === selection.sourceNo)
+    // 点击源行时优先落到该行下最需要处理的 warn / error 结果行
+    if (selection.lineNo == null) {
+      const pending = reviewedLines.findIndex(
+        (item) =>
+          item.source_no === selection.sourceNo &&
+          (item.tone === 'warn' || item.tone === 'error'),
+      )
+      if (pending >= 0) index = pending
+    }
+    const line = index >= 0 ? reviewedLines[index] : undefined
+    if (!line) return null
+    // 高置信度行只展示通过结论与判定依据
+    if (line.tone === 'success') {
+      const reviewed = reviews.get(index)
+      const reason = reviewed
+        ? reviewed.text != null
+          ? '已人工修改并采纳，置信度标记为高'
+          : '已人工采纳，置信度标记为高'
+        : line.entity_id
+          ? `命中实体 ${line.entity_id}，参数完整`
+          : line.source_no == null
+            ? '渲染器自动补齐的命令，无匹配告警'
+            : '知识库命令模板确定，未发现参数或映射告警'
+      return { key: index, command: line.text, tone: 'success', reason }
+    }
+    // muted（视图行 / quit / 自动补齐）不进入检查区
+    if (line.tone !== 'warn' && line.tone !== 'error') return null
+    return {
+      key: index,
+      hint: targetDetail?.description ?? '该行建议人工确认',
+      command: line.text,
+      tone: line.tone,
+      onAccept: () => {
+        setReviews((prev) => new Map(prev).set(index, { tone: 'success' }))
+        advanceAfterReview(index)
+      },
+      onAcceptEdited: (text) => {
+        setReviews((prev) => new Map(prev).set(index, { tone: 'success', text }))
+        advanceAfterReview(index)
+      },
+      onDefer: () => {
+        setSelection(null)
+        setAlign(null)
+      },
+    }
+  }, [selection, result, reviewedLines, targetDetail, reviews])
 
   useEffect(() => {
     if (status !== 'failed') return
@@ -1549,12 +1892,12 @@ export function TranslatePage() {
       targetDevice.model,
     )}_${exportStamp(now)}`
     if (format === 'cfg') {
-      downloadText(buildCfgText(result.lines), `${base}.cfg`)
+      downloadText(buildCfgText(reviewedLines), `${base}.cfg`)
       message.success('配置已导出')
       return
     }
     downloadText(
-      buildReviewReport(result.lines, {
+      buildReviewReport(reviewedLines, {
         generatedAt: now,
         source: `${sourceDevice.vendor || '未选择'} ${sourceDevice.model || ''}`.trim(),
         target: `${targetDevice.vendor || '未选择'} ${targetDevice.model || ''}`.trim(),
@@ -1589,7 +1932,8 @@ export function TranslatePage() {
             )}
             <button
               type="button"
-              className="flex items-center gap-1.5 text-[13px] text-ink-500"
+              onClick={handleOpenHistory}
+              className="flex items-center gap-1.5 text-[13px] text-ink-500 hover:text-brand-strong"
             >
               <HistoryOutlined className="text-[15px]" />
               翻译记录
@@ -1606,16 +1950,9 @@ export function TranslatePage() {
           initialSourceModel={sourceDevice.model}
           initialTargetVendor={targetDevice.vendor}
           initialTargetModel={targetDevice.model}
-          onSourceChange={(vendor, model) =>
-            setSourceDevice((prev) =>
-              prev.vendor === vendor && prev.model === model ? prev : { vendor, model },
-            )
-          }
-          onTargetChange={(vendor, model) =>
-            setTargetDevice((prev) =>
-              prev.vendor === vendor && prev.model === model ? prev : { vendor, model },
-            )
-          }
+          onSourceChange={handleSourceDeviceChange}
+          onTargetChange={handleTargetDeviceChange}
+          onDevicesLoaded={handleDevicesLoaded}
           onTranslate={handleTranslate}
           onExport={handleExport}
           translating={generating}
@@ -1630,7 +1967,7 @@ export function TranslatePage() {
           deviceSummary={`${sourceDevice.vendor} → ${targetDevice.vendor}`}
         />
 
-        <div className="flex flex-col gap-4 xl:flex-row">
+        <div className="flex flex-col gap-4 xl:gap-2 xl:flex-row">
           <ConfigPanel
             variant="source"
             sourceVendor={sourceDevice.vendor}
@@ -1642,9 +1979,11 @@ export function TranslatePage() {
             sourceSaveState={source.saveState}
             sourceMarks={sourceMarks}
             focusLine={selection?.sourceNo ?? null}
-            onSelectLine={(lineNo) => handleSelectLine(lineNo, undefined, 'source')}
-            scrollTo={sourceScroll}
+            onSelectLine={(lineNo) => handleSelectLine(lineNo)}
             detail={sourceDetail}
+            expanded={expandedPanel === 'source'}
+            hidden={expandedPanel === 'result'}
+            onToggleExpand={() => toggleExpandedPanel('source')}
           />
           <ConfigPanel
             variant="target"
@@ -1658,15 +1997,23 @@ export function TranslatePage() {
             warnCount={resultStats.warn}
             errorCount={resultStats.error}
             focusLine={selection?.sourceNo ?? null}
-            onSelectLine={(sourceNo, lineNo) =>
-              handleSelectLine(sourceNo, lineNo, 'result')
-            }
-            scrollTo={targetScroll}
+            onSelectLine={(sourceNo, lineNo) => handleSelectLine(sourceNo, lineNo)}
             detail={targetDetail}
+            expanded={expandedPanel === 'result'}
+            hidden={expandedPanel === 'source'}
+            onToggleExpand={() => toggleExpandedPanel('result')}
+            onCopy={handleCopyResult}
           />
           <AuditPanel
             result={result}
-            onSelectLine={(lineNo) => handleSelectLine(lineNo, undefined, 'audit')}
+            lines={reviewedLines}
+            review={reviewTarget}
+            checkpoints={checkpoints}
+            canCreateCheckpoint={translated && reviews.size > 0}
+            onSelectLine={(lineNo) => handleSelectLine(lineNo)}
+            onCreateCheckpoint={openCheckpointModal}
+            onRestoreCheckpoint={handleRestoreCheckpoint}
+            onDeleteCheckpoint={handleDeleteCheckpoint}
           />
         </div>
 
@@ -1678,6 +2025,177 @@ export function TranslatePage() {
           <span>翻译结果仅供参考，请在目标设备验证后下发</span>
         </footer>
       </div>
+
+      <Modal
+        title="生成检查点"
+        open={checkpointModalOpen}
+        onOk={handleCreateCheckpoint}
+        onCancel={() => setCheckpointModalOpen(false)}
+        okText="保存"
+        cancelText="取消"
+        okButtonProps={{ disabled: !checkpointName.trim() }}
+        destroyOnClose
+      >
+        <div className="py-2">
+          <label className="mb-1.5 block text-[12px] text-ink-500">检查点名称</label>
+          <Input
+            value={checkpointName}
+            onChange={(e) => setCheckpointName(e.target.value)}
+            placeholder="请输入检查点名称"
+            maxLength={30}
+            showCount
+            onPressEnter={() => checkpointName.trim() && handleCreateCheckpoint()}
+            autoFocus
+          />
+          <p className="mt-2 text-[11px] text-ink-400">
+            将保存当前已处理的审计结果，可在检查点记录中恢复
+          </p>
+        </div>
+      </Modal>
+
+      <Drawer
+        closable={false}
+        title={
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-brand-soft text-brand">
+              <HistoryOutlined className="text-[13px]" />
+            </span>
+            <span className="text-[14px] font-medium text-ink-900">翻译记录</span>
+            {historyItems.length > 0 ? (
+              <span className="rounded-full bg-soft px-1.5 py-[1px] text-[11px] text-ink-400">
+                {historyItems.length}
+              </span>
+            ) : null}
+          </div>
+        }
+        extra={
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void loadHistory()}
+              disabled={historyLoading}
+              className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-ink-500 transition-colors hover:bg-soft hover:text-brand-strong disabled:cursor-not-allowed disabled:text-ink-300"
+            >
+              <ReloadOutlined spin={historyLoading} className="text-[12px]" />
+              刷新
+            </button>
+            <span className="h-4 w-px bg-line" />
+            <button
+              type="button"
+              aria-label="关闭"
+              onClick={() => setHistoryOpen(false)}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-ink-400 transition-colors hover:bg-soft hover:text-ink-700"
+            >
+              <CloseOutlined className="text-[12px]" />
+            </button>
+          </div>
+        }
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        width={440}
+        styles={{
+          wrapper: { boxShadow: 'none' },
+          header: {
+            padding: '14px 20px',
+            borderBottom: '1px solid #E4EAF2',
+            background: '#FFFFFF',
+          },
+          body: { padding: '16px 18px', background: '#F7F9FC' },
+          section: {
+            width: 'calc(100% - 12px)',
+            height: 'calc(100% - 24px)',
+            margin: '12px 12px 12px 0',
+            borderRadius: 16,
+            overflow: 'hidden',
+            boxShadow: '0 10px 40px rgba(32, 44, 64, 0.16)',
+          },
+        }}
+        destroyOnClose
+      >
+        {historyLoading && historyItems.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-20 text-ink-400">
+            <LoadingOutlined className="text-[20px]" />
+            <span className="text-[12px]">正在加载翻译记录…</span>
+          </div>
+        ) : historyItems.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-20 text-ink-400">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-ink-300">
+              <HistoryOutlined className="text-[18px]" />
+            </div>
+            <span className="text-[12px]">暂无翻译记录</span>
+            <span className="text-[11px] text-ink-300">完成一次翻译后会自动出现在这里</span>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {historyItems.map((item) => {
+              const date = new Date(item.created_at)
+              const time = date.toLocaleString('zh-CN', {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              })
+              const statusText =
+                item.status === 'succeeded'
+                  ? '已完成'
+                  : item.status === 'failed'
+                    ? '失败'
+                    : item.status === 'running'
+                      ? '翻译中'
+                      : '排队中'
+              const statusClass =
+                item.status === 'succeeded'
+                  ? 'bg-success-soft text-success'
+                  : item.status === 'failed'
+                    ? 'bg-danger-soft text-danger'
+                    : 'bg-brand-soft text-brand'
+              const isCurrent = item.request_id === requestId
+              return (
+                <button
+                  key={item.request_id}
+                  type="button"
+                  onClick={() => handleRestoreHistory(item)}
+                  className="group block w-full rounded-xl border border-line bg-white p-3 text-left transition-all hover:border-brand-line hover:shadow-panel"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <HistoryDeviceLine
+                        label="源"
+                        vendor={item.source_vendor}
+                        model={item.source_model}
+                      />
+                      <div className="pl-[26px] text-[10px] text-ink-300">
+                        <ArrowRightOutlined className="rotate-90" />
+                      </div>
+                      <HistoryDeviceLine
+                        label="目标"
+                        vendor={item.target_vendor}
+                        model={item.target_model}
+                      />
+                    </div>
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-[1px] text-[10px] ${statusClass}`}
+                    >
+                      {statusText}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between border-t border-line-soft pt-2">
+                    <span className="text-[11px] text-ink-400">{time}</span>
+                    {isCurrent ? (
+                      <span className="text-[11px] text-brand-strong">当前任务</span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[11px] text-brand opacity-0 transition-opacity group-hover:opacity-100">
+                        恢复此记录
+                        <ArrowRightOutlined className="text-[10px]" />
+                      </span>
+                    )}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Drawer>
     </div>
   )
 }

@@ -65,4 +65,6 @@ def translate_config(
         source_vendor=source_vendor,
         source_device_type=source_device_type,
     )
-    return renderer.render(parsed_lines)
+    output = renderer.render(parsed_lines)
+    output.parsed_lines = parsed_lines
+    return output

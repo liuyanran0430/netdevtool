@@ -3,7 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import TranslationTask
+from app.models import TranslationTask, TranslationTaskStatus
 
 
 class TranslationRepository:
@@ -23,6 +23,38 @@ class TranslationRepository:
             .execution_options(populate_existing=True)
         )
         return self.db.scalars(stmt).one_or_none()
+
+    def list_recent(self, user_id: int, limit: int = 20) -> list[dict]:
+        """指定用户最近的翻译任务，仅取元数据字段（不加载 source_text/result_json）。"""
+        stmt = (
+            select(
+                TranslationTask.request_id,
+                TranslationTask.status,
+                TranslationTask.source_vendor,
+                TranslationTask.source_model,
+                TranslationTask.target_vendor,
+                TranslationTask.target_model,
+                TranslationTask.created_at,
+                TranslationTask.finished_at,
+            )
+            .where(TranslationTask.user_id == user_id)
+            .order_by(TranslationTask.created_at.desc())
+            .limit(limit)
+        )
+        rows = self.db.execute(stmt).all()
+        return [row._mapping for row in rows]
+
+    def list_all_succeeded(self) -> list[TranslationTask]:
+        """全部已成功、带结果的任务，按创建时间升序，仅用于审核条目一次性回填。"""
+        stmt = (
+            select(TranslationTask)
+            .where(
+                TranslationTask.status == TranslationTaskStatus.succeeded,
+                TranslationTask.result_json.is_not(None),
+            )
+            .order_by(TranslationTask.created_at)
+        )
+        return list(self.db.scalars(stmt))
 
     def update(self, task: TranslationTask) -> TranslationTask:
         self.db.commit()

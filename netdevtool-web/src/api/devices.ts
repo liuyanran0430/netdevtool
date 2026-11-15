@@ -1,4 +1,4 @@
-import { API_BASE, toRequestError } from './client'
+import { API_BASE, authHeaders, toRequestError } from './client'
 
 const DEVICE_TYPE_LABELS: Record<string, string> = {
   switch: '交换机',
@@ -19,7 +19,7 @@ export function deviceTypeLabel(type: string): string {
 
 /** 一次拉取设备全量；设备表规模增大后应改回按 device_type / vendor 过滤 */
 export async function fetchDevices(): Promise<Device[]> {
-  const response = await fetch(`${API_BASE}/api/v1/devices`)
+  const response = await fetch(`${API_BASE}/api/v1/devices`, { headers: authHeaders() })
   if (!response.ok) throw await toRequestError(response, '加载设备失败')
   return (await response.json()) as Device[]
 }

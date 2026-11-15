@@ -1,0 +1,10 @@
+vendor: huawei
+device_type: switch
+interfaces:
+  vlan: "Vlanif{number}"
+  gigabit: "GE{number}"
+  ten_gigabit: "10GE{number}"
+  loopback: "LoopBack{number}"
+  tunnel: "Tunnel{number}"
+  management: "Meth{number}"
+  aggregation: "Eth-Trunk{number}"

@@ -1,4 +1,4 @@
-import { API_BASE, toRequestError } from './client'
+import { API_BASE, authHeaders, toRequestError } from './client'
 
 export type TranslationStatus = 'pending' | 'running' | 'succeeded' | 'failed'
 export type TranslationTone = 'focus' | 'success' | 'warn' | 'error' | 'muted'
@@ -50,12 +50,33 @@ export interface TranslationTask {
   error?: string | null
 }
 
+export interface TranslationListItem {
+  request_id: string
+  status: TranslationStatus
+  source_vendor: string
+  source_model: string
+  target_vendor: string
+  target_model: string
+  created_at: string
+  finished_at: string | null
+}
+
+export interface TranslationSource {
+  request_id: string
+  source_text: string
+  source_vendor: string
+  source_model: string
+  target_vendor: string
+  target_model: string
+  status: TranslationStatus
+}
+
 export async function createTranslation(
   input: TranslationCreateInput,
 ): Promise<Pick<TranslationTask, 'request_id' | 'status'>> {
   const response = await fetch(`${API_BASE}/api/v1/translations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(input),
   })
   if (!response.ok) throw await toRequestError(response, '创建翻译任务失败')
@@ -63,7 +84,25 @@ export async function createTranslation(
 }
 
 export async function getTranslation(requestId: string): Promise<TranslationTask> {
-  const response = await fetch(`${API_BASE}/api/v1/translations/${requestId}`)
+  const response = await fetch(`${API_BASE}/api/v1/translations/${requestId}`, {
+    headers: authHeaders(),
+  })
   if (!response.ok) throw await toRequestError(response, '查询翻译任务失败')
   return (await response.json()) as TranslationTask
+}
+
+export async function listTranslations(limit = 20): Promise<TranslationListItem[]> {
+  const response = await fetch(`${API_BASE}/api/v1/translations?limit=${limit}`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) throw await toRequestError(response, '查询翻译记录失败')
+  return (await response.json()) as TranslationListItem[]
+}
+
+export async function getTranslationSource(requestId: string): Promise<TranslationSource> {
+  const response = await fetch(`${API_BASE}/api/v1/translations/${requestId}/source`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) throw await toRequestError(response, '查询源配置失败')
+  return (await response.json()) as TranslationSource
 }

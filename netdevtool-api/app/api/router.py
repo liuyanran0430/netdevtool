@@ -2,9 +2,12 @@
 
 from fastapi import APIRouter
 
-from app.api import devices, health, translations
+from app.api import auth, devices, health, knowledge, review, translations
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(auth.router)
 api_router.include_router(devices.router)
 api_router.include_router(translations.router)
+api_router.include_router(knowledge.router)
+api_router.include_router(review.router)

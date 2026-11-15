@@ -1,0 +1,10 @@
+vendor: zte
+device_type: switch
+interfaces:
+  vlan: "vlan{number}"
+  gigabit: "gei_{number}"
+  ten_gigabit: "xgei_{number}"
+  loopback: "LoopBack{number}"
+  tunnel: "tunnel{number}"
+  management: "MNG{number}"
+  aggregation: "smartgroup{number}"

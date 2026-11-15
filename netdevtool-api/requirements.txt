@@ -5,7 +5,10 @@ pymysql>=1.1,<2.0
 cryptography>=43.0
 pydantic>=2.9,<3.0
 pydantic-settings>=2.6,<3.0
+langchain-core>=1.8,<2.0
+langchain-openai>=1.8,<2.0
 celery[redis]==5.3.6
 kombu==5.3.5
 redis>=5.2,<7.0
 pyyaml>=6.0,<7.0
+bcrypt>=4.2,<6.0

@@ -1,0 +1,13 @@
+entity_id: interface_port_mode
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+command: "port link-mode bridge"
+negative_command: "port link-mode route"
+view: interface
+verified: true
+sources:
+  - "H3C Comware V7 接口视图：port link-mode bridge / port link-mode route"

@@ -1,0 +1,14 @@
+entity_id: stp_mode
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+command: spanning-tree mode {mode}
+view: system-view
+view_path:
+- system-view
+verified: true
+sources:
+  - "中兴 VRP：spanning-tree mode {mode}"

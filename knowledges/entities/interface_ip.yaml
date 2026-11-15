@@ -1,0 +1,22 @@
+id: interface_ip
+domain: interface
+description: "配置三层接口的 IPv4 地址与掩码"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+    note: "接口命名各厂商不同（如华为 Vlanif10、华三 Vlan-interface10、中兴 vlan10）"
+  ip:
+    type: string
+    format: ipv4
+    required: true
+    note: "接口 IP 地址"
+  mask:
+    type: string
+    required: true
+    pattern: '\d{1,3}(?:\.\d{1,3}){3}|\d{1,2}'
+    note: "子网掩码，支持点分十进制（255.255.255.0）或前缀长度（24）"
+semantic_notes:
+  - "华为、华三、中兴均在接口视图下使用 ip address <ip> <mask> 配置三层地址"
+  - "掩码写法保持源配置原样，不自动在点分十进制与前缀长度之间转换"

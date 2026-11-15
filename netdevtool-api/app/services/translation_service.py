@@ -1,6 +1,7 @@
 """翻译任务服务：任务创建、查询、取消与 Worker 执行流程。"""
 
 import json
+import logging
 import time
 from datetime import datetime
 from uuid import uuid4
@@ -14,13 +15,19 @@ from app.repositories.translation_repository import TranslationRepository
 from app.schemas import (
     TranslationCreate,
     TranslationEntityInfo,
+    TranslationListItem,
     TranslationOut,
     TranslationResult,
     TranslationResultLine,
     TranslationResultSummary,
+    TranslationSourceOut,
     TranslationWarning,
 )
+from app.services import knowledge_gap_service, review_item_service
 from app.translate_rule import get_registry, translate_config
+from app.translate_rule.parser import ParsedLine
+
+logger = logging.getLogger(__name__)
 
 
 class TranslationDispatchError(RuntimeError):
@@ -31,10 +38,13 @@ class TranslationExecutionError(RuntimeError):
     """翻译前置条件不满足，例如设备档案缺失。"""
 
 
-def create_translation(db: Session, payload: TranslationCreate) -> TranslationTask:
+def create_translation(
+    db: Session, payload: TranslationCreate, user_id: int
+) -> TranslationTask:
     repository = TranslationRepository(db)
     task = repository.create(
         TranslationTask(
+            user_id=user_id,
             request_id=str(uuid4()),
             source_vendor=payload.source_vendor,
             source_model=payload.source_model,
@@ -59,8 +69,16 @@ def create_translation(db: Session, payload: TranslationCreate) -> TranslationTa
     return repository.update(task)
 
 
-def get_translation(db: Session, request_id: str) -> TranslationOut | None:
+def _get_owned_task(db: Session, request_id: str, user_id: int) -> TranslationTask | None:
+    """只返回属于当前用户的任务，他人任务与不存在同样处理，避免泄露记录。"""
     task = TranslationRepository(db).get_by_request_id(request_id)
+    if task is None or task.user_id != user_id:
+        return None
+    return task
+
+
+def get_translation(db: Session, request_id: str, user_id: int) -> TranslationOut | None:
+    task = _get_owned_task(db, request_id, user_id)
     if task is None:
         return None
 
@@ -76,9 +94,25 @@ def get_translation(db: Session, request_id: str) -> TranslationOut | None:
     )
 
 
-def cancel_translation(db: Session, request_id: str) -> bool:
+def list_translations(
+    db: Session, user_id: int, limit: int = 20
+) -> list[TranslationListItem]:
+    rows = TranslationRepository(db).list_recent(user_id, limit)
+    return [TranslationListItem.model_validate(row) for row in rows]
+
+
+def get_translation_source(
+    db: Session, request_id: str, user_id: int
+) -> TranslationSourceOut | None:
+    task = _get_owned_task(db, request_id, user_id)
+    if task is None:
+        return None
+    return TranslationSourceOut.model_validate(task)
+
+
+def cancel_translation(db: Session, request_id: str, user_id: int) -> bool:
     repository = TranslationRepository(db)
-    task = repository.get_by_request_id(request_id)
+    task = _get_owned_task(db, request_id, user_id)
     if task is None:
         return False
     if task.status not in {TranslationTaskStatus.pending, TranslationTaskStatus.running}:
@@ -109,7 +143,7 @@ def run_translation_task(request_id: str) -> None:
         started = time.perf_counter()
 
         try:
-            result = _translate(db, task)
+            result, parsed_lines, source_device, target_device = _translate(db, task)
             task = repository.get_by_request_id(request_id)
             if task is None or task.status != TranslationTaskStatus.running:
                 return
@@ -120,13 +154,43 @@ def run_translation_task(request_id: str) -> None:
             task.error_message = None
             task.finished_at = datetime.now()
             repository.update(task)
+
+            try:
+                collected = knowledge_gap_service.collect_gaps(
+                    db,
+                    request_id=request_id,
+                    source_vendor=_vendor_key(source_device),
+                    source_device_type=source_device.device_type.value,
+                    product=source_device.model,
+                    os=None,
+                    parsed_lines=parsed_lines,
+                    result=result,
+                    target_vendor=_vendor_key(target_device),
+                    target_device_type=target_device.device_type.value,
+                )
+                if collected:
+                    logger.info("知识缺口采集完成：request_id=%s 行数=%d", request_id, collected)
+            except Exception:
+                # 缺口采集是旁路动作，失败不影响翻译结果
+                logger.exception("知识缺口采集失败：request_id=%s", request_id)
+
+            try:
+                # 审核条目物化同样旁路执行，失败不影响翻译结果
+                written = review_item_service.materialize_task_items(
+                    db, task, result, source_device=source_device
+                )
+                logger.info("审核条目物化完成：request_id=%s 条数=%d", request_id, written)
+            except Exception:
+                logger.exception("审核条目物化失败：request_id=%s", request_id)
         except TranslationExecutionError as exc:
             _mark_failed(db, repository, request_id, str(exc))
         except Exception as exc:
             _mark_failed(db, repository, request_id, f"翻译任务执行失败：{exc}")
 
 
-def _translate(db: Session, task: TranslationTask) -> TranslationResult:
+def _translate(
+    db: Session, task: TranslationTask
+) -> tuple[TranslationResult, list[ParsedLine], Device, Device]:
     """查询设备档案并调用知识库完成翻译。"""
     device_repository = DeviceRepository(db)
     source_device = device_repository.find_by_vendor_and_model(task.source_vendor, task.source_model)
@@ -165,31 +229,37 @@ def _translate(db: Session, task: TranslationTask) -> TranslationResult:
             )
         )
 
-    return TranslationResult(
-        lines=[
-            TranslationResultLine(
-                no=line.no,
-                text=line.text,
-                tone=line.tone,
-                source_no=line.source_no,
-                entity_id=line.entity_id,
-            )
-            for line in output.lines
-        ],
-        warnings=[
-            TranslationWarning(
-                no=warning.no,
-                message=warning.message,
-                code=warning.code,
-                severity=warning.severity,
-            )
-            for warning in output.warnings
-        ],
-        entities=entities,
-        summary=TranslationResultSummary(
-            total=output.summary["total"],
-            duration_ms=output.summary["duration_ms"],
+    return (
+        TranslationResult(
+            lines=[
+                TranslationResultLine(
+                    no=line.no,
+                    text=line.text,
+                    tone=line.tone,
+                    source_no=line.source_no,
+                    entity_id=line.entity_id,
+                )
+                for line in output.lines
+            ],
+            warnings=[
+                TranslationWarning(
+                    no=warning.no,
+                    message=warning.message,
+                    code=warning.code,
+                    severity=warning.severity,
+                    reason=warning.reason,
+                )
+                for warning in output.warnings
+            ],
+            entities=entities,
+            summary=TranslationResultSummary(
+                total=output.summary["total"],
+                duration_ms=output.summary["duration_ms"],
+            ),
         ),
+        output.parsed_lines,
+        source_device,
+        target_device,
     )
 
 

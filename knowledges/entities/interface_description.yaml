@@ -1,0 +1,16 @@
+id: interface_description
+domain: interface
+description: "配置接口描述信息"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+    note: "接口名称，跨厂商时按接口命名规则映射"
+  text:
+    type: string
+    required: true
+    note: "描述文本，可包含空格；三厂商命令写法一致"
+semantic_notes:
+  - "华为、华三、中兴均在接口视图下使用 description <text>"
+  - "描述内容按源配置原样保留，不做长度或字符集转换"

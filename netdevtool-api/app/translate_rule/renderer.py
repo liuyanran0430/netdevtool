@@ -21,6 +21,8 @@ _IPV4_FULL = re.compile(rf"^{IPV4_PATTERN}$")
 
 _TONE_BY_CONFIDENCE = {"high": TONE_SUCCESS, "medium": TONE_WARN, "low": TONE_ERROR}
 _TONE_RANK = {TONE_SUCCESS: 0, TONE_WARN: 1, TONE_ERROR: 2}
+_INTF_UNMAPPED_MESSAGE = "接口名无法映射到目标厂商命名，已原样保留，请人工确认"
+_INTF_MAPPED_MESSAGE = "接口名已按厂商命名规则转换，请确认映射结果"
 
 
 def _confidence_tone(confidence: str) -> str:
@@ -54,6 +56,8 @@ class RenderWarning:
     message: str
     code: str = "unknown"
     severity: str = "warn"
+    # 细分原因，目前用于 unsupported_entity 的三种成因
+    reason: str | None = None
 
 
 @dataclass
@@ -64,6 +68,8 @@ class TranslationOutput:
     warnings: list[RenderWarning] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
     meta: dict[str, object] = field(default_factory=dict)
+    # 解析中间结果，供知识缺口采集使用，不对外输出
+    parsed_lines: list[ParsedLine] = field(default_factory=list, repr=False)
 
 
 class Renderer:
@@ -134,6 +140,12 @@ class Renderer:
                 self._target_vendor, self._target_device_type, entity.entity_id
             )
             if spec is None or implementation is None or not implementation.supported:
+                if spec is None:
+                    reason = "entity_missing"
+                elif implementation is None:
+                    reason = "missing_impl"
+                else:
+                    reason = "explicit_unsupported"
                 output.lines.append(
                     RenderedLine(
                         item.no,
@@ -144,7 +156,13 @@ class Renderer:
                     )
                 )
                 output.warnings.append(
-                    RenderWarning(item.no, "目标设备不支持该实体", "unsupported_entity", "error")
+                    RenderWarning(
+                        item.no,
+                        "目标设备不支持该实体",
+                        "unsupported_entity",
+                        "error",
+                        reason,
+                    )
                 )
                 unsupported += 1
                 continue
@@ -170,15 +188,26 @@ class Renderer:
             # 按目标厂商习惯转换参数分隔符（如 VLAN 列表 to / hyphen）
             params = _apply_param_formats(entity.params, implementation.param_formats)
 
+            cross_vendor = bool(
+                self._source_vendor and self._source_vendor != self._target_vendor
+            )
+            # 跨厂商时按接口命名表重写 intf，未识别类型则原样保留
+            intf_mapped = False
+            if cross_vendor and params.get("intf") and self._source_device_type:
+                mapped, intf_mapped = self._registry.map_interface(
+                    params["intf"],
+                    source_vendor=self._source_vendor,
+                    source_device_type=self._source_device_type,
+                    target_vendor=self._target_vendor,
+                    target_device_type=self._target_device_type,
+                )
+                params = {**params, "intf": mapped}
+
             # 厂商实现可覆盖规范视图结构（如中兴 router ospf 无 area 子视图）
             view_templates = implementation.view_path or spec.view_path
             view_path = [_render_template(template, params) for template in view_templates]
             if not view_path and implementation.view:
                 view_path = [implementation.view]
-
-            cross_vendor = bool(
-                self._source_vendor and self._source_vendor != self._target_vendor
-            )
 
             common = _common_prefix(current_view_path, view_path)
             if not self._profile.allow_direct_view_switch:
@@ -199,12 +228,18 @@ class Renderer:
                     and depth < len(view_templates)
                     and "{intf}" in view_templates[depth]
                 ):
+                    # 接口名经过厂商转换或无法识别，均按 medium 置信度提示复核
                     view_tone = TONE_WARN
+                    message, code = (
+                        (_INTF_MAPPED_MESSAGE, "intf_translated")
+                        if intf_mapped
+                        else (_INTF_UNMAPPED_MESSAGE, "intf_unmapped")
+                    )
                     output.warnings.append(
                         RenderWarning(
                             view_source_no if view_source_no is not None else item.no,
-                            "接口名未做厂商映射，请人工确认",
-                            "intf_unmapped",
+                            message,
+                            code,
                             "warn",
                         )
                     )
@@ -231,11 +266,11 @@ class Renderer:
                     continue
                 emitted.add(key)
                 pre_tone = TONE_SUCCESS
-                if cross_vendor and "{intf}" in pre_command:
+                if cross_vendor and not intf_mapped and "{intf}" in pre_command:
                     pre_tone = TONE_WARN
                     output.warnings.append(
                         RenderWarning(
-                            item.no, "接口名未做厂商映射，请人工确认", "intf_unmapped", "warn"
+                            item.no, _INTF_UNMAPPED_MESSAGE, "intf_unmapped", "warn"
                         )
                     )
                 output.lines.append(
@@ -256,7 +291,18 @@ class Renderer:
                 if source_impl is not None:
                     # 两侧置信度取低值，避免源侧不确定而结果看似高可信
                     tone = _degrade(tone, _confidence_tone(source_impl.confidence))
-            if not implementation.verified:
+            if implementation.origin == "supplement":
+                # 补充知识库命中：结果永远降级为 warn，并标记来源
+                tone = _degrade(tone, TONE_WARN)
+                output.warnings.append(
+                    RenderWarning(
+                        item.no,
+                        f"{entity.entity_id}：命中补充知识库，结果未经验证",
+                        "supplement_applied",
+                        "warn",
+                    )
+                )
+            elif not implementation.verified:
                 tone = _degrade(tone, TONE_WARN)
                 output.warnings.append(
                     RenderWarning(
@@ -275,21 +321,25 @@ class Renderer:
                         "warn",
                     )
                 )
-            if cross_vendor and "{intf}" in (implementation.command or ""):
+            if cross_vendor and not intf_mapped and "{intf}" in (implementation.command or ""):
                 tone = _degrade(tone, TONE_WARN)
                 output.warnings.append(
                     RenderWarning(
-                        item.no, "接口名未做厂商映射，请人工确认", "intf_unmapped", "warn"
+                        item.no, _INTF_UNMAPPED_MESSAGE, "intf_unmapped", "warn"
                     )
                 )
 
             command = _render_template(implementation.command or "", params)
             if entity.negative:
-                # 否定语义：按目标厂商前缀输出删除命令，不补子命令、不进入视图
+                # 否定语义：优先使用厂商的独立删除命令，否则按前缀生成，不补子命令、不进入视图
+                if implementation.negative_command:
+                    negative_text = _render_template(implementation.negative_command, params)
+                else:
+                    negative_text = self._profile.negation_prefix + " " + command
                 output.lines.append(
                     RenderedLine(
                         item.no,
-                        indent + self._profile.negation_prefix + " " + command,
+                        indent + negative_text,
                         tone,
                         item.no,
                         entity.entity_id,

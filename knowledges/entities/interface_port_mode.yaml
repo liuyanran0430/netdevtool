@@ -1,0 +1,12 @@
+id: interface_port_mode
+domain: interface
+description: "切换接口二层/三层模式"
+view_path: ["system-view", "interface {intf}"]
+parameters:
+  intf:
+    type: string
+    required: true
+    note: "接口名称，跨厂商时按接口命名规则映射"
+semantic_notes:
+  - "华为 portswitch / undo portswitch；华三 port link-mode bridge / route；中兴 switch attribute enable / disable"
+  - "正向表示切换为二层模式，否定形式（undo / no）表示切换为三层模式"

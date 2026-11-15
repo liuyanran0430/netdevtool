@@ -1,0 +1,12 @@
+entity_id: interface_description
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+command: "description {text}"
+view: interface
+verified: true
+sources:
+  - "ZXR10 5960X 接口配置：接口视图下 description text"

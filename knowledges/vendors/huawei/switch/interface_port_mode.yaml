@@ -1,0 +1,12 @@
+entity_id: interface_port_mode
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+command: "portswitch"
+view: interface
+verified: true
+sources:
+  - "华为 VRP 接口视图：portswitch 切换为二层，undo portswitch 切换为三层"

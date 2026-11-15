@@ -94,6 +94,8 @@ class Implementation(BaseModel):
     confidence: str = "medium"
     pre_commands: list[str] = Field(default_factory=list)
     command: str | None = None
+    # 否定形式：厂商使用独立命令表达（如华三 port link-mode route），留空时按 negation_prefix 生成
+    negative_command: str | None = None
     view: str | None = None
     view_path: list[str] = Field(default_factory=list)
     sub_commands: list[str] = Field(default_factory=list)
@@ -102,11 +104,21 @@ class Implementation(BaseModel):
     unsupported_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
+    # 来源层：core=人工维护的核心层，supplement=AI 兜底沉淀的补充层
+    origin: str = "core"
 
     @field_validator("vendor", "device_type")
     @classmethod
     def _normalize_lower(cls, value: str) -> str:
         return value.strip().lower()
+
+    @field_validator("origin")
+    @classmethod
+    def _check_origin(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"core", "supplement"}:
+            raise ValueError("origin 仅支持 core / supplement")
+        return normalized
 
     @field_validator("param_formats")
     @classmethod
@@ -143,3 +155,92 @@ class VendorProfile(BaseModel):
     @classmethod
     def _normalize_lower(cls, value: str) -> str:
         return value.strip().lower()
+
+
+class InterfaceNaming(BaseModel):
+    """厂商接口命名规则：规范类型 → 含 `{number}` 的接口名模板。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vendor: str = Field(min_length=1)
+    device_type: str = Field(min_length=1)
+    interfaces: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("vendor", "device_type")
+    @classmethod
+    def _normalize_lower(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("interfaces")
+    @classmethod
+    def _check_placeholders(cls, value: dict[str, str]) -> dict[str, str]:
+        for type_key, template in value.items():
+            if extract_placeholders(template) != {"number"}:
+                raise ValueError(f"{type_key}: 接口模板必须且只能包含 {{number}}")
+        return value
+
+
+class SupplementSource(BaseModel):
+    """补充条目：源侧命令定义。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vendor: str = Field(min_length=1)
+    device_type: str = Field(min_length=1)
+    product: str | None = None
+    os: str | None = None
+    view_path: list[str] = Field(default_factory=list)
+    command: str = Field(min_length=1)
+    parameters: dict[str, ParameterSpec] = Field(default_factory=dict)
+
+    @field_validator("vendor", "device_type")
+    @classmethod
+    def _normalize_lower(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class SupplementTarget(BaseModel):
+    """补充条目：目标侧命令定义。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vendor: str = Field(min_length=1)
+    device_type: str = Field(min_length=1)
+    product: str | None = None
+    os: str | None = None
+    view_path: list[str] = Field(default_factory=list)
+    command: str = Field(min_length=1)
+    pre_commands: list[str] = Field(default_factory=list)
+    negative_command: str | None = None
+
+    @field_validator("vendor", "device_type")
+    @classmethod
+    def _normalize_lower(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class SupplementCase(BaseModel):
+    """补充条目的真实用例，供人工核对。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+
+
+class SupplementEntry(BaseModel):
+    """`supplements/{source_vendor}/{device_type}/{slug}.yaml` 的契约。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    source: SupplementSource
+    target: SupplementTarget
+    origin: str = "llm"
+    confidence: str = "low"
+    verified: bool = False
+    accepted_by: str | None = None
+    accepted_at: str | None = None
+    uses: int = 0
+    sources: list[str] = Field(default_factory=list)
+    cases: list[SupplementCase] = Field(default_factory=list)
