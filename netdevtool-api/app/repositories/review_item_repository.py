@@ -4,7 +4,12 @@ from sqlalchemy import and_, delete, func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import Session
 
-from app.models import ReviewDecision, ReviewDecisionAction, ReviewItem
+from app.models import (
+    ReviewDecision,
+    ReviewDecisionAction,
+    ReviewItem,
+    SupplementCandidate,
+)
 
 # 条目与处置按「用户 + 稳定命令标识」关联
 DECISION_JOIN = and_(
@@ -60,14 +65,12 @@ class ReviewItemRepository:
         self,
         *,
         user_id: int,
-        status: str = "all",
         target_vendor: str | None = None,
         target_model: str | None = None,
         code: str | None = None,
     ) -> int:
         conditions = self._conditions(
             user_id=user_id,
-            status=status,
             target_vendor=target_vendor,
             target_model=target_model,
             code=code,
@@ -86,22 +89,21 @@ class ReviewItemRepository:
         self,
         *,
         user_id: int,
-        status: str,
         target_vendor: str | None,
         target_model: str | None,
         code: str | None,
         offset: int,
         limit: int,
-    ) -> list[tuple[ReviewItem, ReviewDecision | None]]:
+    ) -> list[ReviewItem]:
+        """仅返回待审核条目：已处置的命令不再出现在列表中。"""
         conditions = self._conditions(
             user_id=user_id,
-            status=status,
             target_vendor=target_vendor,
             target_model=target_model,
             code=code,
         )
         stmt = (
-            select(ReviewItem, ReviewDecision)
+            select(ReviewItem)
             .outerjoin(ReviewDecision, DECISION_JOIN)
             .where(*conditions)
             .order_by(
@@ -113,7 +115,7 @@ class ReviewItemRepository:
             .offset(offset)
             .limit(limit)
         )
-        return [(row[0], row[1]) for row in self.db.execute(stmt).all()]
+        return list(self.db.scalars(stmt))
 
     def stats(self, user_id: int) -> dict[ReviewDecisionAction, int]:
         """按处置动作统计全部条目，未处置的条目不在结果中。"""
@@ -158,26 +160,63 @@ class ReviewItemRepository:
         )
         return [(row[0], row[1]) for row in self.db.execute(stmt).all()]
 
+    def count_history(
+        self, *, user_id: int, action: str = "all", keyword: str | None = None
+    ) -> int:
+        conditions = self._history_conditions(user_id=user_id, action=action, keyword=keyword)
+        stmt = (
+            select(func.count())
+            .select_from(ReviewDecision)
+            .join(ReviewItem, DECISION_JOIN)
+            .where(*conditions)
+        )
+        return int(self.db.scalar(stmt) or 0)
+
+    def list_history_page(
+        self,
+        *,
+        user_id: int,
+        action: str,
+        keyword: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[tuple[ReviewDecision, ReviewItem, SupplementCandidate | None]]:
+        """按处置时间倒序读取处置记录，关联条目展示信息与采纳的候选。"""
+        conditions = self._history_conditions(user_id=user_id, action=action, keyword=keyword)
+        stmt = (
+            select(ReviewDecision, ReviewItem, SupplementCandidate)
+            .join(ReviewItem, DECISION_JOIN)
+            .outerjoin(
+                SupplementCandidate, SupplementCandidate.id == ReviewDecision.candidate_id
+            )
+            .where(*conditions)
+            .order_by(ReviewDecision.updated_at.desc(), ReviewDecision.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [(row[0], row[1], row[2]) for row in self.db.execute(stmt).all()]
+
+    def _history_conditions(
+        self, *, user_id: int, action: str, keyword: str | None
+    ) -> list:
+        conditions = [ReviewDecision.user_id == user_id]
+        if action != "all":
+            conditions.append(ReviewDecision.action == ReviewDecisionAction(action))
+        if keyword:
+            escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append(ReviewItem.source_text.like(f"%{escaped}%", escape="\\"))
+        return conditions
+
     def _conditions(
         self,
         *,
         user_id: int,
-        status: str,
         target_vendor: str | None,
         target_model: str | None,
         code: str | None,
     ) -> list:
-        conditions = [ReviewItem.user_id == user_id]
-        if status == "pending":
-            conditions.append(ReviewDecision.id.is_(None))
-        elif status == "accepted":
-            conditions.append(
-                ReviewDecision.action.in_(
-                    [ReviewDecisionAction.accept, ReviewDecisionAction.edit]
-                )
-            )
-        elif status == "skipped":
-            conditions.append(ReviewDecision.action == ReviewDecisionAction.skip)
+        # 审核列表只展示待审核条目，已处置的通过审核记录撤销后回到列表
+        conditions = [ReviewItem.user_id == user_id, ReviewDecision.id.is_(None)]
         if target_vendor:
             conditions.append(ReviewItem.target_vendor == target_vendor)
         if target_model:

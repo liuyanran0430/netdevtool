@@ -8,6 +8,9 @@ view_return: return
 # 配置删除前缀
 negation_prefix: undo
 
+# 显示命令关键字：源侧用于识别，目标侧用于生成
+display_prefix: display
+
 # 华为 VRP 不允许从接口视图内直接切换到另一个接口视图
 allow_direct_view_switch: false
 

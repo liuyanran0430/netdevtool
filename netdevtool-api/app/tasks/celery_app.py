@@ -7,7 +7,10 @@ from app.config import settings
 celery_app = Celery(
     "netdevtool",
     broker=settings.REDIS_URL,
-    include=["app.tasks.translation_task"],
+    include=[
+        "app.tasks.translation_task",
+        "app.tasks.knowledge_index_task",
+    ],
 )
 celery_app.conf.update(
     task_ignore_result=True,

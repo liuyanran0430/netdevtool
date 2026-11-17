@@ -3,13 +3,19 @@
 前端类型由 /openapi.json 生成，此处定义的模型即前后端契约。
 """
 
-from typing import Any
+from typing import Any, Literal
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import (
     DeviceType,
+    KnowledgeBaseChunkingMode,
+    KnowledgeBaseIndexingMode,
+    KnowledgeBaseRetrievalMode,
+    KnowledgeDocumentFileType,
+    KnowledgeDocumentStage,
+    KnowledgeDocumentStatus,
     KnowledgeGapKind,
     KnowledgeGapStatus,
     ReviewDecisionAction,
@@ -41,6 +47,141 @@ class DeviceOut(APIModel):
     vendor_en: str | None = None
     model: str
     device_type: DeviceType
+
+
+class DeviceManualOut(BaseModel):
+    """外部手册链接；本地文件由接口直接返回文件流。"""
+
+    kind: str
+    url: str
+
+
+class KnowledgeBaseOut(APIModel):
+    """知识库出参，包含向量与检索配置。"""
+
+    id: int
+    name: str
+    vector_store_name: str
+    chunking_mode: KnowledgeBaseChunkingMode
+    general_delimiter: str | None = None
+    general_max_length: int | None = None
+    general_overlap: int | None = None
+    parent_delimiter: str | None = None
+    parent_max_length: int | None = None
+    child_delimiter: str | None = None
+    child_max_length: int | None = None
+    indexing_mode: KnowledgeBaseIndexingMode
+    retrieval_mode: KnowledgeBaseRetrievalMode
+    hybrid_semantic_weight: int
+    hybrid_top_k: int
+    hybrid_score_threshold: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeStatusOut(BaseModel):
+    """知识库连接状态：数据库与 Qdrant 可用性。"""
+
+    connected: bool
+    database: bool
+    qdrant: bool
+    knowledge_bases: int
+    detail: str | None = None
+
+
+class KnowledgeBaseConfigUpdate(BaseModel):
+    """知识库向量与检索配置更新入参。"""
+
+    chunking_mode: KnowledgeBaseChunkingMode
+    general_delimiter: str = Field(default="", max_length=32)
+    general_max_length: int | None = Field(default=None, ge=1, le=5000)
+    general_overlap: int | None = Field(default=None, ge=0, le=5000)
+    parent_delimiter: str = Field(default="", max_length=32)
+    parent_max_length: int | None = Field(default=None, ge=1, le=5000)
+    child_delimiter: str = Field(default="", max_length=32)
+    child_max_length: int | None = Field(default=None, ge=1, le=5000)
+    indexing_mode: KnowledgeBaseIndexingMode
+    retrieval_mode: KnowledgeBaseRetrievalMode
+    hybrid_semantic_weight: int = Field(ge=0, le=100)
+    hybrid_top_k: int = Field(ge=1, le=50)
+    hybrid_score_threshold: float = Field(ge=0, le=1)
+
+
+class KnowledgeDocumentOut(APIModel):
+    """知识库文档出参，包含状态、阶段与进度。"""
+
+    id: int
+    kb_id: int
+    file_name: str
+    file_type: KnowledgeDocumentFileType
+    file_size: int
+    file_hash: str
+    status: KnowledgeDocumentStatus
+    stage: KnowledgeDocumentStage | None = None
+    progress: int
+    total_chunks: int | None = None
+    processed_chunks: int
+    chunk_count: int | None = None
+    metadata_json: dict[str, Any] | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDocumentUploadItem(BaseModel):
+    """单个文件的上传结果。"""
+
+    file_name: str
+    result: Literal["created", "duplicated", "failed"]
+    doc: KnowledgeDocumentOut | None = None
+    error: str | None = None
+
+
+class KnowledgeDocumentUploadResult(BaseModel):
+    """批量上传结果。"""
+
+    items: list[KnowledgeDocumentUploadItem]
+
+
+class KnowledgeDocumentListOut(BaseModel):
+    """知识库文档列表与处理中数量。"""
+
+    items: list[KnowledgeDocumentOut]
+    processing_count: int
+
+
+def _validate_metadata_pairs(value: dict[str, str]) -> dict[str, str]:
+    if len(value) > 50:
+        raise ValueError("元数据项不能超过 50 个")
+    for key in value:
+        if not key.strip():
+            raise ValueError("元数据键不能为空")
+        if len(key) > 64:
+            raise ValueError("元数据键长度不能超过 64 个字符")
+    return value
+
+
+class KnowledgeDocumentMetadataUpdate(BaseModel):
+    """更新单篇文档的元数据键值对。"""
+
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_metadata_pairs(value)
+
+
+class KnowledgeDocumentMetadataBatchUpdate(BaseModel):
+    """批量更新多篇文档的元数据键值对。"""
+
+    ids: list[int] = Field(min_length=1)
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_metadata_pairs(value)
 
 
 class TranslationCreate(BaseModel):
@@ -197,7 +338,6 @@ class ReviewItemOut(APIModel):
     target_model: str
     gap_id: int | None = None
     candidate: ReviewCandidateOut | None = None
-    decision: ReviewDecisionOut | None = None
     view: str
     source_text: str
     target_text: str
@@ -241,6 +381,36 @@ class ReviewDecisionSnapshotOut(APIModel):
     action: ReviewDecisionAction
     decided_text: str | None = None
     original_tone: str
+
+
+class ReviewHistoryItemOut(APIModel):
+    """审核记录条目：一条处置及其关联命令的展示信息。"""
+
+    item_key: str
+    action: ReviewDecisionAction
+    decided_text: str | None = None
+    request_id: str
+    source_vendor: str
+    source_model: str
+    target_vendor: str
+    target_model: str
+    view: str
+    source_text: str
+    target_text: str
+    codes: list[str]
+    severity: str
+    candidate: ReviewCandidateOut | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewHistoryPageOut(APIModel):
+    """审核记录分页结果。"""
+
+    items: list[ReviewHistoryItemOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class UserOut(APIModel):

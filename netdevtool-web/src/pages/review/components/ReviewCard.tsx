@@ -3,6 +3,7 @@ import { Checkbox, Modal, message } from 'antd'
 import { EditOutlined, CloseOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { StatusTag } from '../../../components/StatusTag'
 import { generateCandidate } from '../../../api/knowledge'
+import { openDeviceManual } from '../../../api/devices'
 import type { ReviewCandidateDto } from '../../../api/review'
 import type { ReviewItem } from '../deriveItems'
 import { WARNING_LABELS } from '../deriveItems'
@@ -14,16 +15,8 @@ interface ReviewCardProps {
   onAccept: (candidateId?: number) => Promise<void>
   onEditAccept: (text: string) => Promise<void>
   onSkip: () => Promise<void>
-  onUndo: () => Promise<void>
   /** 生成成功后回写条目候选，保证批量采纳与单条采纳使用同一份数据 */
   onCandidateGenerated: (candidate: ReviewCandidateDto) => void
-}
-
-function actionLabel(item: ReviewItem): string {
-  if (!item.decision) return ''
-  if (item.decision.action === 'skip') return '已拒绝'
-  if (item.decision.action === 'edit') return '已修改采纳'
-  return '已采纳'
 }
 
 export function ReviewCard({
@@ -33,12 +26,14 @@ export function ReviewCard({
   onAccept,
   onEditAccept,
   onSkip,
-  onUndo,
   onCandidateGenerated,
 }: ReviewCardProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [manualLoading, setManualLoading] = useState(false)
+  // 是否本次会话内触发过生成：失败后允许重试，页面恢复的历史失败候选不允许
+  const [generatedHere, setGeneratedHere] = useState(false)
   const [accepting, setAccepting] = useState(false)
   const [aiCandidate, setAiCandidate] = useState<{
     id: number
@@ -58,8 +53,7 @@ export function ReviewCard({
       : null,
   )
 
-  const disposed = item.status !== 'pending'
-  const selectable = !disposed
+  const borderClass = checked ? 'border-brand-line' : 'border-line'
 
   const startEdit = () => {
     setDraft(
@@ -73,16 +67,53 @@ export function ReviewCard({
   const confirmEdit = () => {
     const text = draft.trim()
     if (!text) return
-    onEditAccept(text)
-    setEditing(false)
+    Modal.confirm({
+      title: '确认修改后采纳？',
+      content: (
+        <div className="flex flex-col gap-2 pt-1 text-xs text-ink-700">
+          <span>采纳内容将写入数据库，该条目移入审核记录，可在审核记录中撤销。</span>
+          <span className="break-all rounded bg-soft px-2 py-1.5 font-mono text-[13px] text-ink-900">
+            {text}
+          </span>
+        </div>
+      ),
+      okText: '确认采纳',
+      cancelText: '取消',
+      onOk: () => {
+        setEditing(false)
+        return onEditAccept(text)
+      },
+    })
   }
 
-  const handleAccept = async () => {
-    setAccepting(true)
+  const handleAccept = () => {
+    const withCandidate = Boolean(aiCandidate?.passed)
+    Modal.confirm({
+      title: '确认采纳该命令？',
+      content: withCandidate
+        ? '采纳后该映射将写入补充知识库，审核结果同步落库，可在审核记录中撤销。'
+        : '采纳结果将写入数据库，该条目移入审核记录，可在审核记录中撤销。',
+      okText: '确认采纳',
+      cancelText: '取消',
+      onOk: async () => {
+        setAccepting(true)
+        try {
+          await onAccept(withCandidate ? aiCandidate?.id : undefined)
+        } finally {
+          setAccepting(false)
+        }
+      },
+    })
+  }
+
+  const handleOpenManual = async () => {
+    setManualLoading(true)
     try {
-      await onAccept(aiCandidate?.passed ? aiCandidate.id : undefined)
+      await openDeviceManual(item.targetVendor, item.targetModel)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '打开手册失败')
     } finally {
-      setAccepting(false)
+      setManualLoading(false)
     }
   }
 
@@ -96,6 +127,7 @@ export function ReviewCard({
         item.targetModel,
       )
       const errors = candidate.validation?.errors ?? []
+      setGeneratedHere(true)
       setAiCandidate({
         id: candidate.id,
         command: candidate.response?.target_command ?? '',
@@ -147,12 +179,6 @@ export function ReviewCard({
     }
   }
 
-  const borderClass = checked
-    ? 'border-brand-line'
-    : disposed
-      ? 'border-line bg-[#FBFCFE]'
-      : 'border-line'
-
   return (
     <article className={`rounded-lg border bg-white p-4 md:px-5 md:py-3.5 ${borderClass}`}>
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
@@ -160,7 +186,6 @@ export function ReviewCard({
           <Checkbox
             className="mt-0.5 shrink-0"
             checked={checked}
-            disabled={!selectable}
             onChange={(event) => onCheck(event.target.checked)}
           />
           <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -238,20 +263,6 @@ export function ReviewCard({
             </button>
           </div>
         </div>
-      ) : disposed ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2.5">
-          <StatusTag tone={item.decision?.action === 'skip' ? 'gray' : 'green'}>
-            {actionLabel(item)}
-          </StatusTag>
-          <button
-            type="button"
-            onClick={onUndo}
-            className="flex h-[30px] items-center rounded-md border border-line bg-white px-4 text-xs text-ink-700"
-          >
-            撤销
-          </button>
-          <span className="text-[10px] text-ink-400">来源：审核页</span>
-        </div>
       ) : (
         <div className="mt-3 flex flex-wrap items-center gap-2.5">
           <button
@@ -278,7 +289,7 @@ export function ReviewCard({
             <CloseOutlined className="text-[12px]" />
             拒绝
           </button>
-          {item.gapId != null && !aiCandidate ? (
+          {item.gapId != null && !aiCandidate?.passed && (!aiCandidate || generatedHere) ? (
             <button
               type="button"
               disabled={generating}
@@ -291,10 +302,11 @@ export function ReviewCard({
           ) : null}
           <button
             type="button"
-            onClick={() => message.info('演示环境：查看源手册功能暂未实现')}
-            className="ml-auto flex items-center gap-1 text-[11px] text-brand-strong"
+            disabled={manualLoading}
+            onClick={() => void handleOpenManual()}
+            className="ml-auto flex items-center gap-1 text-[11px] text-brand-strong disabled:cursor-not-allowed disabled:text-ink-300"
           >
-            查看源手册
+            {manualLoading ? '打开中…' : '查看设备手册'}
             <span className="text-[10px]">↗</span>
           </button>
         </div>

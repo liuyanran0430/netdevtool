@@ -2,7 +2,6 @@ import { API_BASE, authHeaders, toRequestError } from './client'
 
 export type ReviewSeverity = 'error' | 'warn' | 'info'
 export type ReviewDecisionAction = 'accept' | 'edit' | 'skip'
-export type ReviewStatusFilter = 'all' | 'pending' | 'accepted' | 'skipped'
 
 /** 后端持久化的审核处置结果。 */
 export interface ReviewDecisionDto {
@@ -49,7 +48,6 @@ export interface ReviewItemDto {
   target_model: string
   gap_id: number | null
   candidate: ReviewCandidateDto | null
-  decision: ReviewDecisionDto | null
   view: string
   source_text: string
   target_text: string
@@ -85,7 +83,6 @@ export interface ReviewItemsPageDto {
 export interface ReviewItemsQuery {
   page?: number
   pageSize?: number
-  status?: ReviewStatusFilter
   targetVendor?: string
   targetModel?: string
   code?: string
@@ -100,13 +97,45 @@ export interface ReviewDecisionSnapshotDto {
   original_tone: string
 }
 
+/** 审核记录条目：一条处置及关联命令的展示信息。 */
+export interface ReviewHistoryItemDto {
+  item_key: string
+  action: ReviewDecisionAction
+  decided_text: string | null
+  request_id: string
+  source_vendor: string
+  source_model: string
+  target_vendor: string
+  target_model: string
+  view: string
+  source_text: string
+  target_text: string
+  codes: string[]
+  candidate: ReviewCandidateDto | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ReviewHistoryPageDto {
+  items: ReviewHistoryItemDto[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface ReviewHistoryQuery {
+  page?: number
+  pageSize?: number
+  action?: ReviewDecisionAction | 'all'
+  keyword?: string
+}
+
 export async function listReviewItems(
   query: ReviewItemsQuery = {},
 ): Promise<ReviewItemsPageDto> {
   const params = new URLSearchParams()
   params.set('page', String(query.page ?? 1))
   params.set('page_size', String(query.pageSize ?? 10))
-  if (query.status && query.status !== 'all') params.set('status', query.status)
   if (query.targetVendor) params.set('target_vendor', query.targetVendor)
   if (query.targetModel) params.set('target_model', query.targetModel)
   if (query.code) params.set('code', query.code)
@@ -124,6 +153,22 @@ export async function listReviewDecisionSnapshots(): Promise<ReviewDecisionSnaps
   })
   if (!response.ok) throw await toRequestError(response, '加载审核处置快照失败')
   return (await response.json()) as ReviewDecisionSnapshotDto[]
+}
+
+/** 分页读取当前用户的审核处置记录。 */
+export async function listReviewHistory(
+  query: ReviewHistoryQuery = {},
+): Promise<ReviewHistoryPageDto> {
+  const params = new URLSearchParams()
+  params.set('page', String(query.page ?? 1))
+  params.set('page_size', String(query.pageSize ?? 10))
+  if (query.action && query.action !== 'all') params.set('action', query.action)
+  if (query.keyword) params.set('keyword', query.keyword)
+  const response = await fetch(`${API_BASE}/api/v1/review/history?${params.toString()}`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) throw await toRequestError(response, '加载审核记录失败')
+  return (await response.json()) as ReviewHistoryPageDto
 }
 
 /** 记录审核处置：采纳 / 修改后采纳 / 拒绝，结果持久化到后端。 */

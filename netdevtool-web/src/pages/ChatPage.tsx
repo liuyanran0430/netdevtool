@@ -1,46 +1,117 @@
-import { useState } from 'react'
 import {
   ArrowUpOutlined,
   BookOutlined,
   CodeOutlined,
   CommentOutlined,
-  CopyOutlined,
-  DislikeOutlined,
-  DownOutlined,
-  FileTextOutlined,
   InfoCircleOutlined,
-  LikeOutlined,
-  MoreOutlined,
   PlusOutlined,
-  RobotFilled,
   SafetyCertificateOutlined,
   ScanOutlined,
   SearchOutlined,
-  UserOutlined,
 } from '@ant-design/icons'
-import { Checkbox, Drawer, Input } from 'antd'
+import { Input, Select } from 'antd'
+import { useEffect, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
-import { StatusTag } from '../components/StatusTag'
-import {
-  chatSessions,
-  diagnosticSteps,
-  probableCauses,
-  questionModes,
-} from '../data/chat'
+import { fetchDevices } from '../api/devices'
+import { fetchKnowledgeStatus } from '../api/knowledge'
 
-function ContextSelect({ label, value }: { label: string; value: string }) {
+const VENDOR_LS_KEY = 'chat:vendor'
+
+const QUESTION_MODES = [
+  {
+    id: 'command',
+    label: '命令检索',
+    icon: <CodeOutlined className="text-[12px]" />,
+  },
+  {
+    id: 'troubleshoot',
+    label: '故障排查',
+    icon: <ScanOutlined className="text-[12px]" />,
+  },
+  {
+    id: 'knowledge',
+    label: '知识提问',
+    icon: <BookOutlined className="text-[12px]" />,
+  },
+]
+
+type KnowledgeStatus = 'checking' | 'connected' | 'empty' | 'disconnected'
+
+const KNOWLEDGE_STATUS_META: Record<
+  KnowledgeStatus,
+  { dot: string; text: string; desc: string }
+> = {
+  checking: {
+    dot: 'bg-ink-300',
+    text: '正在检测知识库连接',
+    desc: '正在检查知识库服务状态',
+  },
+  connected: {
+    dot: 'bg-success',
+    text: '企业知识库已连接',
+    desc: '回答基于设备手册与运维知识',
+  },
+  empty: {
+    dot: 'bg-warn',
+    text: '知识库暂无可用文档',
+    desc: '请先在知识库中上传并完成索引',
+  },
+  disconnected: {
+    dot: 'bg-danger',
+    text: '企业知识库未连接',
+    desc: '知识库服务不可用，请检查后端服务',
+  },
+}
+
+function readStoredVendor(): string {
+  try {
+    return localStorage.getItem(VENDOR_LS_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function ContextSelect({
+  label,
+  value,
+  options,
+  loading = false,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: { value: string; label: string }[]
+  loading?: boolean
+  onChange: (value: string) => void
+}) {
   return (
-    <div className="flex h-9 items-center justify-between gap-2 rounded-lg border border-line bg-white px-3 text-[13px] text-ink-500">
-      <span className="whitespace-nowrap">
-        {label}
-        <span className="ml-0.5 font-medium text-ink-900">{value}</span>
-      </span>
-      <DownOutlined className="text-[10px] text-ink-400" />
+    <div className="flex h-9 items-center gap-1 rounded-lg border border-line bg-white pl-3 pr-1.5 text-[13px] text-ink-500">
+      <span className="whitespace-nowrap">{label}</span>
+      <Select
+        value={value || undefined}
+        onChange={onChange}
+        options={options}
+        loading={loading}
+        placeholder="暂无厂商"
+        variant="borderless"
+        popupMatchSelectWidth={false}
+        className="min-w-[76px] text-[13px] font-medium"
+      />
     </div>
   )
 }
 
-function SessionHistory({ className = '' }: { className?: string }) {
+function SessionHistory({
+  className = '',
+  kbStatus,
+  kbDetail,
+}: {
+  className?: string
+  kbStatus: KnowledgeStatus
+  kbDetail: string | null
+}) {
+  const knowledgeMeta = KNOWLEDGE_STATUS_META[kbStatus]
   return (
     <div
       className={`flex flex-col gap-6 bg-soft px-4 pb-[22px] pt-[26px] ${className}`}
@@ -48,7 +119,7 @@ function SessionHistory({ className = '' }: { className?: string }) {
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-2">
           <span className="text-[14px] font-bold text-ink-900">会话历史</span>
-          <span className="text-[11px] text-ink-400">3</span>
+          <span className="text-[11px] text-ink-400">0</span>
         </div>
         <button type="button" aria-label="搜索会话" className="text-[15px] text-ink-400">
           <SearchOutlined />
@@ -57,36 +128,11 @@ function SessionHistory({ className = '' }: { className?: string }) {
 
       <div className="flex flex-col gap-2">
         <span className="px-1 text-[11px] text-ink-400">最近 7 天</span>
-        {chatSessions.map((session) => (
-          <button
-            type="button"
-            key={session.id}
-            className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left ${
-              session.active
-                ? 'border-brand-line bg-brand-soft'
-                : 'border-line bg-white'
-            }`}
-          >
-            <span
-              className={`shrink-0 text-[13px] ${
-                session.active ? 'text-brand-strong' : 'text-ink-400'
-              }`}
-            >
-              <CommentOutlined />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span
-                className={`block truncate text-[13px] ${
-                  session.active ? 'font-medium text-brand-strong' : 'text-ink-900'
-                }`}
-              >
-                {session.title}
-              </span>
-              <span className="mt-0.5 block text-[11px] text-ink-400">{session.time}</span>
-            </span>
-            <MoreOutlined className="shrink-0 text-[13px] text-ink-400" />
-          </button>
-        ))}
+        <div className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-line px-4 py-8 text-center">
+          <CommentOutlined className="text-[16px] text-ink-300" />
+          <span className="text-[12px] text-ink-400">暂无会话记录</span>
+          <span className="text-[11px] text-ink-400">发起提问后会自动保存</span>
+        </div>
       </div>
 
       <button
@@ -101,168 +147,180 @@ function SessionHistory({ className = '' }: { className?: string }) {
 
       <div className="border-t border-line pt-4">
         <div className="flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-success" />
-          <span className="text-xs text-ink-500">企业知识库已连接</span>
+          <span className={`h-1.5 w-1.5 rounded-full ${knowledgeMeta.dot}`} />
+          <span className="text-xs text-ink-500">{knowledgeMeta.text}</span>
         </div>
         <p className="mt-2 text-[11px] leading-[1.6] text-ink-400">
-          回答基于设备手册与运维知识
+          {kbDetail ?? knowledgeMeta.desc}
         </p>
       </div>
     </div>
   )
 }
 
-function TroubleshootCard() {
+function RobotAvatar({ size = 88 }: { size?: number }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-line bg-white">
-      <div className="flex h-12 items-center justify-between gap-3 border-b border-line bg-head px-5">
-        <div className="flex min-w-0 items-center gap-2">
-          <ScanOutlined className="shrink-0 text-[15px] text-brand-strong" />
-          <span className="truncate text-[14px] font-bold text-ink-900">
-            VLAN 间连通性排查
-          </span>
-        </div>
-        <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-ink-500">
-          华为 S5735
-          <span className="text-ink-300">/</span>
-          三层互通
-        </span>
-      </div>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 120 120"
+      fill="none"
+      role="img"
+      aria-label="网络知识助手"
+    >
+      <defs>
+        <linearGradient
+          id="chat-robot-head"
+          x1="30"
+          y1="30"
+          x2="92"
+          y2="94"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#6E9BF2" />
+          <stop offset="1" stopColor="#2D5EBD" />
+        </linearGradient>
+        <linearGradient
+          id="chat-robot-face"
+          x1="36"
+          y1="44"
+          x2="84"
+          y2="82"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FFFFFF" />
+          <stop offset="1" stopColor="#E6EFFF" />
+        </linearGradient>
+        <linearGradient
+          id="chat-robot-ring"
+          x1="60"
+          y1="8"
+          x2="60"
+          y2="112"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#EAF1FF" />
+          <stop offset="1" stopColor="#F7FAFF" stopOpacity="0.2" />
+        </linearGradient>
+      </defs>
 
-      <div className="flex flex-col gap-2.5 px-5 pb-2.5 pt-3.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[13px] font-bold text-ink-900">可能原因</span>
-          <span className="text-[11px] text-ink-400">按概率排序 · 基于相似案例</span>
-        </div>
+      <circle cx="60" cy="62" r="52" fill="url(#chat-robot-ring)" />
 
-        <div className="flex flex-col gap-1 rounded-md bg-[#F5F8FE] px-3 py-1">
-          {probableCauses.map((cause) => (
-            <div key={cause.text} className="flex items-center gap-2.5">
-              <span className="w-[38px] shrink-0 text-right font-mono text-[14px] font-semibold text-brand-strong">
-                {cause.percent}
-              </span>
-              <span className="flex h-[5px] w-[74px] shrink-0 items-center overflow-hidden rounded-full bg-[#DDE6F4]">
-                <span
-                  className="h-[5px] rounded-full bg-brand"
-                  style={{ width: `${(cause.width / 74) * 100}%` }}
-                />
-              </span>
-              <span className="truncate text-[13px] text-ink-900">{cause.text}</span>
-            </div>
-          ))}
-        </div>
+      {/* 天线 */}
+      <path
+        d="M60 30V20"
+        stroke="#8FB2F5"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+      <circle cx="60" cy="15" r="6" fill="#4F86F7" />
+      <circle cx="60" cy="15" r="2.4" fill="#FFFFFF" />
 
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-[13px] font-bold text-ink-900">诊断步骤</span>
-          <span className="text-[11px] text-brand-strong">1 / 4 已确认</span>
-        </div>
+      {/* 侧耳 */}
+      <rect x="12" y="48" width="10" height="24" rx="5" fill="#8FB2F5" />
+      <rect x="98" y="48" width="10" height="24" rx="5" fill="#8FB2F5" />
 
-        <div>
-          {diagnosticSteps.map((step) => (
-            <div
-              key={step.id}
-              className="flex items-center gap-2.5 border-b border-line-soft py-2 last:border-b-0"
-            >
-              <Checkbox defaultChecked={step.done} />
-              <span className="min-w-0 flex-1 text-[13px] leading-5 text-ink-900">
-                {step.text}
-              </span>
-              <span className="hidden shrink-0 rounded border border-line bg-soft px-2 py-0.5 font-mono text-[11px] text-ink-500 sm:block">
-                {step.command}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* 头部 */}
+      <rect
+        x="22"
+        y="30"
+        width="76"
+        height="62"
+        rx="20"
+        fill="url(#chat-robot-head)"
+      />
+      <rect
+        x="26"
+        y="33"
+        width="68"
+        height="26"
+        rx="14"
+        fill="#FFFFFF"
+        opacity="0.12"
+      />
 
-      <div className="flex items-start gap-2 border-t border-line bg-soft px-5 py-2.5">
-        <InfoCircleOutlined className="mt-0.5 shrink-0 text-[12px] text-ink-400" />
-        <span className="text-[11px] leading-[1.6] text-ink-500">
-          建议先执行只读诊断命令；修改配置前，请备份并确认业务影响。
-        </span>
-      </div>
-    </div>
+      {/* 屏幕脸 */}
+      <rect
+        x="32"
+        y="42"
+        width="56"
+        height="40"
+        rx="14"
+        fill="url(#chat-robot-face)"
+      />
+
+      {/* 眼睛 */}
+      <circle cx="48" cy="60" r="5.5" fill="#2D5EBD" />
+      <circle cx="72" cy="60" r="5.5" fill="#2D5EBD" />
+      <circle cx="49.8" cy="58.2" r="1.8" fill="#FFFFFF" />
+      <circle cx="73.8" cy="58.2" r="1.8" fill="#FFFFFF" />
+
+      {/* 微笑 */}
+      <path
+        d="M52 69.5C54.6 72.4 57.2 73.8 60 73.8C62.8 73.8 65.4 72.4 68 69.5"
+        stroke="#2D5EBD"
+        strokeWidth="3.6"
+        strokeLinecap="round"
+      />
+
+      <ellipse cx="60" cy="104" rx="26" ry="5" fill="#DCE7FA" opacity="0.7" />
+    </svg>
   )
 }
 
-function ChatMessages() {
+interface ChatMessageView {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+}
+
+function ChatMessages({
+  messages = [],
+}: {
+  messages?: ChatMessageView[]
+}) {
+  if (messages.length === 0) {
+    return (
+      <div className="flex min-h-[320px] flex-col items-center justify-center gap-3 px-4 text-center">
+        <RobotAvatar size={176} />
+        <p className="max-w-[360px] text-[12px] leading-[1.7] text-ink-400">
+          输入网络配置、故障现象或命令问题，助手会结合企业知识库给出解答与排查建议。
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-end gap-2">
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-ink-400">昨天 14:32</span>
-          <span className="text-xs font-medium text-ink-500">我</span>
-          <span className="flex h-[25px] w-[25px] items-center justify-center rounded-full bg-[#E2E9F5] text-[12px] text-ink-500">
-            <UserOutlined />
-          </span>
-        </div>
-        <div className="max-w-[86%] rounded-[12px_2px_12px_12px] bg-brand-soft px-5 py-3.5 text-[15px] font-medium leading-6 text-ink-900">
-          华为 S5735 两个 VLAN 间不通，怎么排查？
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand text-[14px] text-white">
-            <RobotFilled />
-          </span>
-          <span className="text-[13px] font-bold text-ink-900">网络知识助手</span>
-          <StatusTag tone="green">知识库增强</StatusTag>
-        </div>
-
-        <p className="text-[14px] leading-[1.7] text-ink-900">
-          先确认三层接口和 VLAN 放行顺序……建议按以下步骤逐项排查，优先检查 Vlanif 状态。
-        </p>
-
-        <TroubleshootCard />
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] text-ink-400">参考来源</span>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-md border border-line bg-white px-2 py-1 text-[11px] text-brand-strong"
-          >
-            <FileTextOutlined className="text-[12px] text-ink-400" />
-            KB-0231 · 手册 §4.3
-            <span className="text-[10px] text-ink-400">↗</span>
-          </button>
-        </div>
-
-        <div className="flex items-center gap-5 text-[12px] text-ink-500">
-          <button type="button" className="flex items-center gap-1.5">
-            <CopyOutlined className="text-[13px] text-ink-400" />
-            复制
-          </button>
-          <button type="button" className="flex items-center gap-1.5">
-            <CommentOutlined className="text-[13px] text-ink-400" />
-            继续追问
-          </button>
-          <span className="h-[13px] w-px bg-line" />
-          <button type="button" aria-label="有帮助">
-            <LikeOutlined className="text-[14px] text-ink-400" />
-          </button>
-          <button type="button" aria-label="没帮助">
-            <DislikeOutlined className="text-[14px] text-ink-400" />
-          </button>
-        </div>
-      </div>
+      {messages.map((message) =>
+        message.role === 'user' ? (
+          <div key={message.id} className="flex flex-col items-end gap-2">
+            <div className="max-w-[86%] rounded-[12px_2px_12px_12px] bg-brand-soft px-4 py-3 text-[14px] leading-6 text-ink-900">
+              {message.content}
+            </div>
+          </div>
+        ) : (
+          <div key={message.id} className="flex gap-3">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-soft">
+              <RobotAvatar size={30} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 text-[13px] font-bold text-ink-900">
+                网络知识助手
+              </div>
+              <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
+                {message.content}
+              </p>
+            </div>
+          </div>
+        ),
+      )}
     </div>
   )
 }
 
 function ChatInput() {
-  const modes = questionModes.map((mode, idx) => ({
-    ...mode,
-    icon:
-      idx === 0 ? (
-        <CodeOutlined className="text-[12px]" />
-      ) : idx === 1 ? (
-        <ScanOutlined className="text-[12px]" />
-      ) : (
-        <BookOutlined className="text-[12px]" />
-      ),
-  }))
-
+  const [mode, setMode] = useState('command')
   return (
     <div className="shrink-0">
       {/* 桌面端固定 184px 输入区 */}
@@ -276,25 +334,29 @@ function ChatInput() {
             variant="borderless"
             placeholder="输入问题，或粘贴配置/报错信息…"
             autoSize={false}
-            className="!h-[54px] !min-h-0 resize-none !p-0 !text-[13px] placeholder:!text-ink-400"
+            className="!h-[54px] !min-h-0 resize-none !p-0 !text-[13px] !shadow-none !outline-none placeholder:!text-ink-400 focus:!shadow-none focus:!outline-none focus-visible:!outline-none"
           />
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-1">
-              {modes.map((mode) => {
-                const active = mode.id === 'troubleshoot'
+              {QUESTION_MODES.map((item) => {
+                const active = item.id === mode
                 return (
-                  <span
-                    key={mode.id}
-                    className={`flex h-[29px] items-center gap-1.5 rounded-md border px-[9px] text-[11px] ${
+                  <button
+                    type="button"
+                    key={item.id}
+                    onClick={() =>
+                      setMode((current) => (current === item.id ? 'unknown' : item.id))
+                    }
+                    className={`flex h-[29px] items-center gap-1.5 rounded-md border px-[9px] text-[11px] transition-colors ${
                       active
                         ? 'border-[#CDDCFB] bg-brand-soft text-brand-strong'
-                        : 'border-transparent text-ink-500'
+                        : 'border-transparent text-ink-500 hover:bg-brand-soft hover:text-brand-strong'
                     }`}
                   >
-                    {mode.icon}
-                    {mode.label}
-                  </span>
+                    {item.icon}
+                    {item.label}
+                  </button>
                 )
               })}
             </div>
@@ -329,25 +391,29 @@ function ChatInput() {
             variant="borderless"
             placeholder="输入问题，或粘贴配置/报错信息…"
             autoSize={{ minRows: 2, maxRows: 4 }}
-            className="!p-0 !text-[14px] placeholder:!text-ink-400"
+            className="!p-0 !text-[14px] !shadow-none !outline-none placeholder:!text-ink-400 focus:!shadow-none focus:!outline-none focus-visible:!outline-none"
           />
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-1">
-              {modes.map((mode) => {
-                const active = mode.id === 'troubleshoot'
+              {QUESTION_MODES.map((item) => {
+                const active = item.id === mode
                 return (
-                  <span
-                    key={mode.id}
-                    className={`flex h-[29px] items-center gap-1.5 rounded-md px-2.5 text-xs ${
+                  <button
+                    type="button"
+                    key={item.id}
+                    onClick={() =>
+                      setMode((current) => (current === item.id ? 'unknown' : item.id))
+                    }
+                    className={`flex h-[29px] items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${
                       active
-                        ? 'border border-[#CDDCFB] bg-brand-soft text-brand-strong'
-                        : 'text-ink-500'
+                        ? 'border-[#CDDCFB] bg-brand-soft text-brand-strong'
+                        : 'border-transparent text-ink-500 hover:bg-brand-soft'
                     }`}
                   >
-                    {mode.icon}
-                    {mode.label}
-                  </span>
+                    {item.icon}
+                    {item.label}
+                  </button>
                 )
               })}
             </div>
@@ -375,7 +441,69 @@ function ChatInput() {
 }
 
 export function ChatPage() {
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const location = useLocation()
+  const navState = location.state as { fromTranslation?: boolean; vendor?: string } | null
+  const fromTranslation = Boolean(navState?.fromTranslation)
+  const [vendors, setVendors] = useState<string[]>([])
+  // 从翻译任务进入时优先使用任务的目的厂商，其次恢复上次选择
+  const [vendor, setVendor] = useState(() => navState?.vendor || readStoredVendor())
+  const [vendorsLoading, setVendorsLoading] = useState(true)
+  const [kbStatus, setKbStatus] = useState<KnowledgeStatus>('checking')
+  const [kbDetail, setKbDetail] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchKnowledgeStatus()
+      .then((status) => {
+        if (cancelled) return
+        setKbDetail(status.detail)
+        if (!status.connected) {
+          setKbStatus('disconnected')
+        } else if (status.knowledge_bases === 0) {
+          setKbStatus('empty')
+        } else {
+          setKbStatus('connected')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setKbDetail(null)
+          setKbStatus('disconnected')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchDevices()
+      .then((devices) => {
+        if (cancelled) return
+        const unique = [...new Set(devices.map((item) => item.vendor).filter(Boolean))]
+        setVendors(unique)
+        setVendor((current) => (current && unique.includes(current) ? current : (unique[0] ?? '')))
+      })
+      .catch(() => {
+        if (!cancelled) setVendors([])
+      })
+      .finally(() => {
+        if (!cancelled) setVendorsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!vendor) return
+    try {
+      localStorage.setItem(VENDOR_LS_KEY, vendor)
+    } catch {
+      // 隐私模式 / 配额满等场景下静默跳过
+    }
+  }, [vendor])
 
   return (
     <div className="flex min-h-full flex-col">
@@ -384,8 +512,19 @@ export function ChatPage() {
         subtitle="网络设备知识助手"
         right={
           <>
-            <ContextSelect label="厂商上下文：" value="华为" />
-            <ContextSelect label="知识域：" value="全部" />
+            {fromTranslation && (
+              <span className="flex h-9 items-center gap-1.5 rounded-lg border border-brand-line bg-brand-soft px-3 text-[12px] font-medium text-brand-strong">
+                <InfoCircleOutlined className="text-[13px]" />
+                已带入当前翻译任务
+              </span>
+            )}
+            <ContextSelect
+              label="厂商上下文："
+              value={vendor}
+              options={vendors.map((item) => ({ value: item, label: item }))}
+              loading={vendorsLoading}
+              onChange={setVendor}
+            />
             <button
               type="button"
               className="flex h-9 items-center gap-2 rounded-lg bg-brand px-4 text-[13px] font-medium text-white"
@@ -398,30 +537,13 @@ export function ChatPage() {
       />
 
       <div className="flex min-h-[calc(100vh_-_80px)] flex-1 lg:h-[calc(100vh_-_80px)] lg:min-h-0 lg:flex-none">
-        <SessionHistory className="hidden w-[248px] shrink-0 border-r border-line lg:flex" />
+        <SessionHistory
+          className="hidden w-[248px] shrink-0 border-r border-line lg:flex"
+          kbStatus={kbStatus}
+          kbDetail={kbDetail}
+        />
 
         <div className="flex min-w-0 flex-1 flex-col lg:min-h-0">
-          <div className="flex h-[54px] shrink-0 items-center justify-between gap-3 border-b border-line bg-white px-4 lg:px-8">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => setHistoryOpen(true)}
-                className="flex items-center gap-1 text-[12px] text-ink-500 lg:hidden"
-              >
-                会话
-                <span className="text-[10px]">›</span>
-              </button>
-              <span className="truncate text-[13px] font-medium text-ink-900">
-                VLAN 间不通
-              </span>
-              <StatusTag tone="blue">故障排查</StatusTag>
-            </div>
-            <div className="flex shrink-0 items-center gap-3">
-              <span className="hidden text-[11px] text-ink-400 sm:inline">已自动保存</span>
-              <MoreOutlined className="text-[16px] text-ink-400" />
-            </div>
-          </div>
-
           <div className="thin-scrollbar flex-1 overflow-y-auto px-4 pt-6 lg:min-h-0 lg:px-12">
             <ChatMessages />
           </div>
@@ -429,17 +551,6 @@ export function ChatPage() {
           <ChatInput />
         </div>
       </div>
-
-      <Drawer
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        placement="left"
-        size={280}
-        title="会话"
-        styles={{ body: { padding: 0 } }}
-      >
-        <SessionHistory className="min-h-full" />
-      </Drawer>
     </div>
   )
 }

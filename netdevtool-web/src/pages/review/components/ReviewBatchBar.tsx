@@ -1,11 +1,16 @@
+import { Checkbox } from 'antd'
 import { ArrowRightOutlined, CloseOutlined } from '@ant-design/icons'
 
 interface ReviewBatchBarProps {
   selectedCount: number
+  allSelected: boolean
+  someSelected: boolean
+  pageSelectableCount: number
   page: number
   totalPages: number
   rangeText: string
   onPage: (page: number) => void
+  onToggleAll: () => void
   onClear: () => void
   onBatchAccept: () => void
   onBatchSkip: () => void
@@ -56,10 +61,14 @@ function Pagination({
 
 export function ReviewBatchBar({
   selectedCount,
+  allSelected,
+  someSelected,
+  pageSelectableCount,
   page,
   totalPages,
   rangeText,
   onPage,
+  onToggleAll,
   onClear,
   onBatchAccept,
   onBatchSkip,
@@ -68,8 +77,15 @@ export function ReviewBatchBar({
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-line bg-white px-4 py-3 xl:h-[66px] xl:flex-row xl:items-center">
       <div className="flex items-center gap-3">
-        <span className="text-[13px] text-ink-900">已选 {selectedCount} 项</span>
-        <span className="text-xs text-ink-400">通过后将写入知识库</span>
+        <Checkbox
+          checked={allSelected}
+          indeterminate={!allSelected && someSelected}
+          disabled={pageSelectableCount === 0}
+          onChange={onToggleAll}
+        />
+        <span className="text-xs text-ink-500">全选当前页</span>
+        <span className="text-[13px] text-brand">已选 {selectedCount} 项</span>
+        <span className="hidden text-xs text-ink-400 xl:inline">通过后将写入知识库</span>
       </div>
 
       <div className="flex flex-1 flex-wrap items-center justify-between gap-3 xl:justify-center">

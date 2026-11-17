@@ -35,6 +35,17 @@ class Settings(BaseSettings):
     # 知识库目录，留空时使用项目根下的 knowledges
     KNOWLEDGE_BASE_DIR: str = ""
 
+    # Qdrant（留空 QDRANT_URL 时使用嵌入式本地存储，便于开发）
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
+    QDRANT_LOCAL_PATH: str = ""
+
+    # 向量模型（留空时使用本地哈希向量，仅保证流程可用）
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_MODEL: str = ""
+    EMBEDDING_DIM: int = 384
+
     # 大模型（app/llm 使用）
     LLM_PROVIDER: str = "openai"
     LLM_API_KEY: str = ""

@@ -1,7 +1,7 @@
 """源配置解析：命令模板编译为正则，并按视图状态机逐行识别实体。"""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.translate_rule.models import (
     PLACEHOLDER_RE,
@@ -61,12 +61,15 @@ class ParsedLine:
 
     no: int
     text: str
-    kind: str  # blank / comment / view / pre / command / other
+    kind: str  # blank / comment / view / pre / command / display / other
     entity: ParsedEntity | None = None
     # 视图类型 -> 进入该视图的源行号，供渲染器把生成行映射回源配置
     view_nos: dict[str, int] | None = None
     # 该行所在的视图类型，未识别命令用于采集知识缺口
     view: str | None = None
+    # display 行所在的源视图链路与参数，供渲染器重建目标视图
+    view_path: list[str] = field(default_factory=list)
+    view_params: dict[str, str] = field(default_factory=dict)
 
 
 def compile_template(
@@ -155,7 +158,9 @@ class SourceParser:
         self._entities = registry.entities
         implementations = registry.implementations_for(vendor, device_type)
         self._implementations = implementations
-        self._negation_prefix = registry.get_profile(vendor, device_type).negation_prefix
+        profile = registry.get_profile(vendor, device_type)
+        self._negation_prefix = profile.negation_prefix
+        self._display_prefix = profile.display_prefix.lower()
         self._view_types: dict[str, str] = {}
         self._view_prefix_matchers: list[CompiledTemplate] = []
         self._sub_matchers: list[SourceMatcher] = []
@@ -194,6 +199,26 @@ class SourceParser:
                 continue
 
             lowered = stripped.lower()
+            # 显示命令不参与视图状态机，也不作为配置实体解析
+            if lowered.split(maxsplit=1)[0] == self._display_prefix:
+                current_view = view_stack[-1][0] if view_stack else None
+                current_type = (
+                    self._view_type_of(current_view) if current_view else "system-view"
+                )
+                context: dict[str, str] = {}
+                for _, params, _ in view_stack:
+                    context.update(params)
+                parsed.append(
+                    ParsedLine(
+                        number,
+                        raw,
+                        "display",
+                        view=current_type,
+                        view_path=[template for template, _, _ in view_stack],
+                        view_params=context,
+                    )
+                )
+                continue
             if lowered in VIEW_EXIT_COMMANDS:
                 if view_stack:
                     view_stack.pop()

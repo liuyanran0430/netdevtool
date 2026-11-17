@@ -139,7 +139,7 @@ class Implementation(BaseModel):
 
 
 class VendorProfile(BaseModel):
-    """厂商级视图控制配置：退出关键字与收尾行为。"""
+    """厂商级视图控制配置：退出关键字、收尾行为与显示命令关键字。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -148,6 +148,8 @@ class VendorProfile(BaseModel):
     view_exit: str = Field(default="quit", min_length=1)
     view_return: str = Field(default="return", min_length=1)
     negation_prefix: str = Field(default="undo", min_length=1)
+    # 显示/查看命令关键字：源侧用于识别，目标侧用于生成
+    display_prefix: str = Field(default="display", min_length=1)
     allow_direct_view_switch: bool = False
     auto_close_views: bool = True
 
@@ -155,6 +157,14 @@ class VendorProfile(BaseModel):
     @classmethod
     def _normalize_lower(cls, value: str) -> str:
         return value.strip().lower()
+
+    @field_validator("display_prefix")
+    @classmethod
+    def _normalize_display_prefix(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("display_prefix 不能为空")
+        return normalized
 
 
 class InterfaceNaming(BaseModel):

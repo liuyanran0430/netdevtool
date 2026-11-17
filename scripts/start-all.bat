@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-REM === NetDev Tool: Start MySQL + Redis + Backend(FastAPI :8083) + Celery + Frontend(Vite :5175) ===
+REM === NetDev Tool: Start MySQL + Redis + Qdrant + Backend(FastAPI :8083) + Celery + Frontend(Vite :5175) ===
 
 set "PATH=C:\Windows\System32;D:\nvm\nodejs;%PATH%"
 set "ROOT=%~dp0.."
@@ -47,7 +47,28 @@ if errorlevel 1 (
     )
 )
 
-REM ---------- 3. Backend (FastAPI :8083) ----------
+REM ---------- 3. Local Qdrant (:6333) ----------
+set "QDRANT_DIR=%ROOT%\netdevtool-api\.qdrant-server"
+echo [NetDev] Checking local Qdrant on port 6333 ...
+netstat -ano | findstr :6333 | findstr LISTENING >nul 2>&1
+if not errorlevel 1 (
+    echo [NetDev] Qdrant already running.
+) else (
+    if not exist "%QDRANT_DIR%\qdrant.exe" (
+        echo [NetDev] WARN: qdrant.exe not found at %QDRANT_DIR%, knowledge indexing unavailable.
+    ) else (
+        echo [NetDev] Starting local Qdrant ...
+        start "NetDev-Tool-Qdrant" /d "%QDRANT_DIR%" "%QDRANT_DIR%\qdrant.exe"
+        call :wait_port 6333
+        if errorlevel 1 (
+            echo [NetDev] WARN: Qdrant did not open port 6333 in time.
+        ) else (
+            echo [NetDev] Qdrant started.
+        )
+    )
+)
+
+REM ---------- 4. Backend (FastAPI :8083) ----------
 echo [NetDev] Cleaning up any existing process on port 8083 ...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr :8083 ^| findstr LISTENING') do (
     taskkill /F /PID %%p >nul 2>&1
@@ -74,13 +95,13 @@ if errorlevel 1 (
 echo [NetDev] Starting backend on http://localhost:8083 ...
 start "NetDev-Tool-Backend" /d "%ROOT%\netdevtool-api" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8083"
 
-REM ---------- 4. Celery Worker ----------
+REM ---------- 5. Celery Worker ----------
 echo [NetDev] Cleaning up existing Celery worker ...
 taskkill /FI "WINDOWTITLE eq NetDev-Tool-Celery" /T /F >nul 2>&1
 echo [NetDev] Starting Celery worker ...
 start "NetDev-Tool-Celery" /d "%ROOT%\netdevtool-api" cmd /k ".venv\Scripts\python.exe -m celery -A app.tasks.celery_app worker --loglevel=info --pool=solo"
 
-REM ---------- 5. Frontend (Vite :5175) ----------
+REM ---------- 6. Frontend (Vite :5175) ----------
 echo [NetDev] Cleaning up any existing process on port 5175 ...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr :5175 ^| findstr LISTENING') do (
     taskkill /F /PID %%p >nul 2>&1
@@ -93,9 +114,19 @@ echo.
 echo [NetDev] All services starting:
 echo [NetDev]   MySQL    : Windows service "MySQL"
 echo [NetDev]   Redis    : Windows service "Redis"
+echo [NetDev]   Qdrant   : http://localhost:6333  (local, .qdrant-server)
 echo [NetDev]   Backend  : http://localhost:8083  (docs: /docs)
 echo [NetDev]   Celery   : standalone worker window (--pool=solo)
 echo [NetDev]   Frontend : http://localhost:5175
 echo.
 endlocal
 exit /b 0
+
+REM ---------- helper: wait for a TCP port ----------
+:wait_port
+for /l %%i in (1,1,15) do (
+    netstat -ano | findstr :%~1 | findstr LISTENING >nul 2>&1
+    if not errorlevel 1 exit /b 0
+    timeout /t 1 /nobreak >nul
+)
+exit /b 1

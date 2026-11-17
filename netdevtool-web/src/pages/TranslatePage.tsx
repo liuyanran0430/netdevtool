@@ -17,6 +17,7 @@ import {
   LinkOutlined,
   LoadingOutlined,
   ReloadOutlined,
+  RobotOutlined,
   SafetyCertificateOutlined,
   TranslationOutlined,
   UploadOutlined,
@@ -33,6 +34,7 @@ import {
   type SetStateAction,
 } from 'react'
 import { Drawer, Dropdown, Input, message, Modal, Popconfirm, Tooltip } from 'antd'
+import { useNavigate } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import { StatusTag } from '../components/StatusTag'
 import { deviceTypeLabel, fetchDevices, type Device } from '../api/devices'
@@ -72,6 +74,8 @@ const LINE_HEIGHT = 24
 const TEXTAREA_PADDING_TOP = 4
 /** 设备数据未返回前的空列表占位，保持 useMemo 依赖稳定 */
 const EMPTY_DEVICES: Device[] = []
+/** 翻译记录抽屉最多展示的条数 */
+const HISTORY_LIMIT = 10
 
 // ---------- 源配置暂存 / 会话 / 检查点的 localStorage 读写已拆分至 ./translate/storage ----------
 
@@ -133,6 +137,7 @@ function TranslateToolbar({
   onExport,
   translating = false,
   hasResult = false,
+  hasTask = false,
 }: {
   deviceType: string
   onDeviceTypeChange: Dispatch<SetStateAction<string>>
@@ -147,6 +152,7 @@ function TranslateToolbar({
   onExport?: (format: ExportFormat) => void
   translating?: boolean
   hasResult?: boolean
+  hasTask?: boolean
 }) {
   // null 表示设备数据尚未返回，此时不纠正任何已恢复的选择
   const [devices, setDevices] = useState<Device[] | null>(null)
@@ -154,6 +160,7 @@ function TranslateToolbar({
   const [model, setModel] = useState(initialSourceModel ?? '')
   const [targetVendor, setTargetVendor] = useState(initialTargetVendor ?? '')
   const [targetModel, setTargetModel] = useState(initialTargetModel ?? '')
+  const navigate = useNavigate()
 
   useEffect(() => {
     let cancelled = false
@@ -338,6 +345,21 @@ function TranslateToolbar({
               </button>
             </span>
           </Tooltip>
+          <button
+            type="button"
+            onClick={() =>
+              navigate(
+                '/chat',
+                hasTask
+                  ? { state: { fromTranslation: true, vendor: targetVendor } }
+                  : undefined,
+              )
+            }
+            className="flex h-9 items-center gap-[7px] rounded-lg border border-line bg-white px-3.5 text-[13px] font-medium text-ink-900"
+          >
+            <RobotOutlined className="text-[15px] text-ink-500" />
+            去提问
+          </button>
           <Dropdown
             disabled={!hasResult}
             trigger={['click']}
@@ -1392,6 +1414,8 @@ export function TranslatePage() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyItems, setHistoryItems] = useState<TranslationListItem[]>([])
+  // 多取一条用于判断是否还有更早记录
+  const visibleHistoryItems = historyItems.slice(0, HISTORY_LIMIT)
   // 面板放大：source / result 互斥展开，null 为默认双栏
   const [expandedPanel, setExpandedPanel] = useState<'source' | 'result' | null>(null)
   useEffect(() => {
@@ -1444,7 +1468,7 @@ export function TranslatePage() {
   const loadHistory = async () => {
     setHistoryLoading(true)
     try {
-      setHistoryItems(await listTranslations(30))
+      setHistoryItems(await listTranslations(HISTORY_LIMIT + 1))
     } catch {
       message.error('加载翻译记录失败')
     } finally {
@@ -1535,6 +1559,8 @@ export function TranslatePage() {
 
   const generating = status === 'pending' || status === 'running'
   const translated = status === 'succeeded' && result !== null
+  // 已提交过任务或已有源配置（含历史恢复）时，去提问需带上任务上下文提示
+  const hasTranslationTask = Boolean(requestId) || source.text.trim().length > 0
 
   // 旧版本任务的结果不含 entity_id / warnings / entities，恢复后自动重译一次以加载详情
   const legacyRetriedRef = useRef(false)
@@ -1957,6 +1983,7 @@ export function TranslatePage() {
           onExport={handleExport}
           translating={generating}
           hasResult={translated}
+          hasTask={hasTranslationTask}
         />
         <TranslateStatusRow
           translated={translated}
@@ -2061,9 +2088,9 @@ export function TranslatePage() {
               <HistoryOutlined className="text-[13px]" />
             </span>
             <span className="text-[14px] font-medium text-ink-900">翻译记录</span>
-            {historyItems.length > 0 ? (
+            {visibleHistoryItems.length > 0 ? (
               <span className="rounded-full bg-soft px-1.5 py-[1px] text-[11px] text-ink-400">
-                {historyItems.length}
+                {visibleHistoryItems.length}
               </span>
             ) : null}
           </div>
@@ -2127,7 +2154,7 @@ export function TranslatePage() {
           </div>
         ) : (
           <div className="space-y-2.5">
-            {historyItems.map((item) => {
+            {visibleHistoryItems.map((item) => {
               const date = new Date(item.created_at)
               const time = date.toLocaleString('zh-CN', {
                 month: '2-digit',
@@ -2193,6 +2220,11 @@ export function TranslatePage() {
                 </button>
               )
             })}
+            {historyItems.length > HISTORY_LIMIT ? (
+              <div className="pt-1 text-center text-[10px] text-ink-300">
+                仅显示最近 {HISTORY_LIMIT} 条翻译记录
+              </div>
+            ) : null}
           </div>
         )}
       </Drawer>

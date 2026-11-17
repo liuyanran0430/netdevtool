@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Checkbox, Input, Modal, message } from 'antd'
+import { Input, Modal, message } from 'antd'
 import { PageHeader } from '../../components/PageHeader'
 import { saveCheckpoint } from '../translate/storage'
 import {
   createReviewDecision,
-  deleteReviewDecision,
   listReviewDecisionSnapshots,
   listReviewItems,
   type ReviewCandidateDto,
@@ -14,10 +13,8 @@ import {
 import { toReviewItems, type ReviewItem } from './deriveItems'
 import { ReviewCard } from './components/ReviewCard'
 import { ReviewBatchBar } from './components/ReviewBatchBar'
-import {
-  ReviewFilterBar,
-  type StatusFilter,
-} from './components/ReviewFilterBar'
+import { ReviewHistoryDrawer } from './components/ReviewHistoryDrawer'
+import { ReviewFilterBar } from './components/ReviewFilterBar'
 
 const PAGE_SIZE = 10
 
@@ -54,12 +51,12 @@ export function ReviewPage() {
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [targetModel, setTargetModel] = useState('all')
-  const [status, setStatus] = useState<StatusFilter>('all')
   const [code, setCode] = useState('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeName, setCompleteName] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const fetchPage = useCallback(
     async (silent = false) => {
@@ -70,7 +67,6 @@ export function ReviewPage() {
         const response = await listReviewItems({
           page,
           pageSize: PAGE_SIZE,
-          status,
           targetVendor: vendor || undefined,
           targetModel: model || undefined,
           code: code === 'all' ? undefined : code,
@@ -86,7 +82,7 @@ export function ReviewPage() {
         if (!silent) setLoading(false)
       }
     },
-    [page, status, targetModel, code],
+    [page, targetModel, code],
   )
 
   useEffect(() => {
@@ -109,7 +105,7 @@ export function ReviewPage() {
   )
   const codeOptions = data?.code_options ?? []
 
-  const selectableOnPage = items.filter((item) => item.status === 'pending')
+  const selectableOnPage = items
   const allSelected =
     selectableOnPage.length > 0 && selectableOnPage.every((item) => selected.has(item.key))
   const someSelected = selectableOnPage.some((item) => selected.has(item.key))
@@ -146,15 +142,6 @@ export function ReviewPage() {
 
   const applySkip = (item: ReviewItem) => submitDecision(item, 'skip')
 
-  const handleUndo = async (item: ReviewItem) => {
-    try {
-      await deleteReviewDecision(item.key)
-      await fetchPage(true)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '撤销审核处置失败')
-    }
-  }
-
   const handleCandidateGenerated = (itemKey: string, candidate: ReviewCandidateDto) => {
     setData((previous) =>
       previous
@@ -187,9 +174,7 @@ export function ReviewPage() {
   }
 
   const batchApply = async (action: 'accept' | 'skip') => {
-    const targets = items.filter(
-      (item) => selected.has(item.key) && item.status === 'pending',
-    )
+    const targets = items.filter((item) => selected.has(item.key))
     setSelected(new Set())
     if (targets.length === 0) return
     const results = await Promise.allSettled(
@@ -214,9 +199,25 @@ export function ReviewPage() {
     if (decided.size > 0) await fetchPage(true)
   }
 
+  const handleBatchAccept = () => {
+    if (selectedCount === 0) return
+    const withCandidate = items.filter(
+      (item) => selected.has(item.key) && item.candidate?.passed,
+    ).length
+    Modal.confirm({
+      title: `确认采纳已选的 ${selectedCount} 条命令？`,
+      content:
+        withCandidate > 0
+          ? `其中 ${withCandidate} 条带有已通过校验的 AI 候选，将写入补充知识库；采纳结果全部落库并移入审核记录，可在审核记录中撤销。`
+          : '采纳结果将写入数据库，相关条目移入审核记录，可在审核记录中撤销。',
+      okText: '确认采纳',
+      cancelText: '取消',
+      onOk: () => batchApply('accept'),
+    })
+  }
+
   const resetFilters = () => {
     setTargetModel('all')
-    setStatus('all')
     setCode('all')
     setPage(1)
   }
@@ -301,7 +302,7 @@ export function ReviewPage() {
         right={
           <>
             <span className="hidden text-xs text-ink-400 lg:inline">
-              人工确认后同步至命令知识库
+              审核候选命令，持续完善跨厂商映射
             </span>
             {stats.pending === 0 && totalAll > 0 ? (
               <button
@@ -314,7 +315,7 @@ export function ReviewPage() {
             ) : null}
             <button
               type="button"
-              onClick={() => message.info('审核记录功能开发中')}
+              onClick={() => setHistoryOpen(true)}
               className="flex h-[34px] items-center rounded-md border border-line bg-white px-4 text-[13px] text-ink-500"
             >
               审核记录
@@ -340,13 +341,12 @@ export function ReviewPage() {
             </span>
           </div>
           <span className="ml-auto hidden text-xs text-ink-400 xl:inline">
-            审核候选命令，持续完善跨厂商映射
+            AI候选仅供参考，请结合源手册审核
           </span>
         </section>
 
         <ReviewFilterBar
           targetModel={targetModel}
-          status={status}
           code={code}
           modelOptions={modelOptions}
           codeOptions={codeOptions}
@@ -355,30 +355,12 @@ export function ReviewPage() {
             setTargetModel(value)
             setPage(1)
           }}
-          onStatusChange={(value) => {
-            setStatus(value)
-            setPage(1)
-          }}
           onCodeChange={(value) => {
             setCode(value)
             setPage(1)
           }}
           onReset={resetFilters}
         />
-
-        <section className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <Checkbox
-            checked={allSelected}
-            indeterminate={!allSelected && someSelected}
-            disabled={selectableOnPage.length === 0}
-            onChange={toggleSelectAll}
-          />
-          <span className="text-xs text-ink-500">全选当前页</span>
-          <span className="text-xs text-brand">已选 {selectedCount} 项</span>
-          <span className="ml-auto hidden text-xs text-ink-400 xl:inline">
-            AI候选仅供参考，请结合源手册审核
-          </span>
-        </section>
 
         <section className="flex flex-col gap-2.5">
           {showEmpty
@@ -392,7 +374,6 @@ export function ReviewPage() {
                   onAccept={(candidateId) => applyAccept(item, candidateId)}
                   onEditAccept={(text) => applyEdit(item, text)}
                   onSkip={() => applySkip(item)}
-                  onUndo={() => handleUndo(item)}
                   onCandidateGenerated={(candidate) =>
                     handleCandidateGenerated(item.key, candidate)
                   }
@@ -402,12 +383,16 @@ export function ReviewPage() {
 
         <ReviewBatchBar
           selectedCount={selectedCount}
+          allSelected={allSelected}
+          someSelected={someSelected}
+          pageSelectableCount={selectableOnPage.length}
           page={currentPage}
           totalPages={totalPages}
           rangeText={`${rangeStart}–${rangeEnd} / ${total} 条`}
           onPage={setPage}
+          onToggleAll={toggleSelectAll}
           onClear={() => setSelected(new Set())}
-          onBatchAccept={() => batchApply('accept')}
+          onBatchAccept={handleBatchAccept}
           onBatchSkip={() => batchApply('skip')}
         />
 
@@ -435,6 +420,12 @@ export function ReviewPage() {
           onChange={(event) => setCompleteName(event.target.value)}
         />
       </Modal>
+
+      <ReviewHistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onChanged={() => void fetchPage(true)}
+      />
     </div>
   )
 }

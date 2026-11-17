@@ -17,6 +17,7 @@ from app.schemas import (
     ReviewDecisionCreate,
     ReviewDecisionOut,
     ReviewDecisionSnapshotOut,
+    ReviewHistoryPageOut,
     ReviewItemsPageOut,
 )
 from app.services import supplement_service
@@ -24,6 +25,7 @@ from app.services.review_item_service import (
     build_item_key,
     decision_out,
     list_decision_snapshots,
+    list_history_page,
     list_items_page,
 )
 from app.services.supplement_service import CandidateNotFound, CandidateStateError
@@ -37,18 +39,16 @@ def list_review_items(
     *,
     page: int = 1,
     page_size: int = 10,
-    status: str = "all",
     target_vendor: str | None = None,
     target_model: str | None = None,
     code: str | None = None,
 ) -> ReviewItemsPageOut:
-    """按页读取当前用户的审核条目、全局统计与筛选项。"""
+    """按页读取当前用户的待审核条目、全局统计与筛选项。"""
     return list_items_page(
         db,
         user_id=user_id,
         page=page,
         page_size=page_size,
-        status=status,
         target_vendor=target_vendor,
         target_model=target_model,
         code=code,
@@ -58,6 +58,26 @@ def list_review_items(
 def list_decisions(db: Session, user_id: int) -> list[ReviewDecisionSnapshotOut]:
     """当前用户全部处置快照，用于审核页生成检查点。"""
     return list_decision_snapshots(db, user_id)
+
+
+def list_review_history(
+    db: Session,
+    user_id: int,
+    *,
+    page: int = 1,
+    page_size: int = 10,
+    action: str = "all",
+    keyword: str | None = None,
+) -> ReviewHistoryPageOut:
+    """按页读取当前用户的处置记录。"""
+    return list_history_page(
+        db,
+        user_id=user_id,
+        page=page,
+        page_size=page_size,
+        action=action,
+        keyword=keyword,
+    )
 
 
 def record_decision(

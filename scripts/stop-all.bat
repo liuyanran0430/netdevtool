@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-REM === NetDev Tool: Stop Backend(:8083), Celery Worker and Frontend(:5175) ===
+REM === NetDev Tool: Stop Backend(:8083), Celery Worker, Frontend(:5175) and local Qdrant(:6333) ===
 
 set "PATH=C:\Windows\System32;%PATH%"
 
@@ -28,8 +28,16 @@ if not errorlevel 1 (
     set "FOUND=1"
 )
 
+echo [NetDev] Looking for local Qdrant on port 6333 ...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr :6333 ^| findstr LISTENING') do (
+    echo [NetDev] Killing Qdrant PID %%p
+    taskkill /F /PID %%p >nul 2>&1
+    set "FOUND=1"
+)
+taskkill /FI "WINDOWTITLE eq NetDev-Tool-Qdrant" /T /F >nul 2>&1
+
 if "%FOUND%"=="0" (
-    echo [NetDev] no backend, Celery worker or frontend is running
+    echo [NetDev] no backend, Celery worker, frontend or Qdrant is running
 ) else (
     echo [NetDev] done
 )

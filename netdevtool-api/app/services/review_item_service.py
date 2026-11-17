@@ -31,6 +31,8 @@ from app.schemas import (
     ReviewCandidateOut,
     ReviewDecisionOut,
     ReviewDecisionSnapshotOut,
+    ReviewHistoryItemOut,
+    ReviewHistoryPageOut,
     ReviewItemOut,
     ReviewItemsPageOut,
     ReviewStatsOut,
@@ -194,24 +196,22 @@ def list_items_page(
     user_id: int,
     page: int,
     page_size: int,
-    status: str,
     target_vendor: str | None,
     target_model: str | None,
     code: str | None,
 ) -> ReviewItemsPageOut:
+    """只返回待审核条目：命令处置后即从列表消失，撤销后重新出现。"""
     repository = ReviewItemRepository(db)
     total = repository.count(
         user_id=user_id,
-        status=status,
         target_vendor=target_vendor,
         target_model=target_model,
         code=code,
     )
     total_pages = max(1, math.ceil(total / page_size))
     actual_page = min(page, total_pages)
-    rows = repository.list_page(
+    items = repository.list_page(
         user_id=user_id,
-        status=status,
         target_vendor=target_vendor,
         target_model=target_model,
         code=code,
@@ -219,19 +219,18 @@ def list_items_page(
         limit=page_size,
     )
 
-    gap_ids = sorted({item.gap_id for item, _ in rows if item.gap_id is not None})
+    gap_ids = sorted({item.gap_id for item in items if item.gap_id is not None})
     candidates = SupplementCandidateRepository(db).latest_by_gaps(gap_ids)
     candidate_map = {gap_id: candidate_out(candidate) for gap_id, candidate in candidates.items()}
 
-    items = [
-        _item_out(item, decision, candidate_map.get(item.gap_id) if item.gap_id is not None else None)
-        for item, decision in rows
+    item_outs = [
+        _item_out(item, candidate_map.get(item.gap_id) if item.gap_id is not None else None)
+        for item in items
     ]
 
-    all_total = repository.count(user_id=user_id)
     actions = repository.stats(user_id)
     stats = ReviewStatsOut(
-        pending=all_total - sum(actions.values()),
+        pending=repository.count(user_id=user_id),
         accepted=actions.get("accept", 0),
         edited=actions.get("edit", 0),
         skipped=actions.get("skip", 0),
@@ -241,13 +240,63 @@ def list_items_page(
         for vendor, model in repository.list_target_options(user_id)
     ]
     return ReviewItemsPageOut(
-        items=items,
+        items=item_outs,
         total=total,
         page=actual_page,
         page_size=page_size,
         stats=stats,
         target_options=target_options,
         code_options=repository.list_code_options(user_id),
+    )
+
+
+def list_history_page(
+    db: Session,
+    *,
+    user_id: int,
+    page: int,
+    page_size: int,
+    action: str,
+    keyword: str | None,
+) -> ReviewHistoryPageOut:
+    """分页读取处置记录，按处置时间倒序；不修改审核状态。"""
+    repository = ReviewItemRepository(db)
+    total = repository.count_history(user_id=user_id, action=action, keyword=keyword)
+    total_pages = max(1, math.ceil(total / page_size))
+    actual_page = min(page, total_pages)
+    rows = repository.list_history_page(
+        user_id=user_id,
+        action=action,
+        keyword=keyword,
+        offset=(actual_page - 1) * page_size,
+        limit=page_size,
+    )
+    items = [
+        ReviewHistoryItemOut(
+            item_key=decision.item_key,
+            action=decision.action,
+            decided_text=decision.decided_text,
+            request_id=item.request_id,
+            source_vendor=item.source_vendor,
+            source_model=item.source_model,
+            target_vendor=item.target_vendor,
+            target_model=item.target_model,
+            view=item.view,
+            source_text=item.source_text,
+            target_text=item.target_text,
+            codes=list(item.codes or []),
+            severity=item.severity,
+            candidate=candidate_out(candidate) if candidate is not None else None,
+            created_at=decision.created_at,
+            updated_at=decision.updated_at,
+        )
+        for decision, item, candidate in rows
+    ]
+    return ReviewHistoryPageOut(
+        items=items,
+        total=total,
+        page=actual_page,
+        page_size=page_size,
     )
 
 
@@ -290,11 +339,7 @@ def candidate_out(candidate: SupplementCandidate) -> ReviewCandidateOut:
     )
 
 
-def _item_out(
-    item: ReviewItem,
-    decision: ReviewDecision | None,
-    candidate: ReviewCandidateOut | None,
-) -> ReviewItemOut:
+def _item_out(item: ReviewItem, candidate: ReviewCandidateOut | None) -> ReviewItemOut:
     return ReviewItemOut(
         request_id=item.request_id,
         line_index=item.line_index,
@@ -308,7 +353,6 @@ def _item_out(
         target_model=item.target_model,
         gap_id=item.gap_id,
         candidate=candidate,
-        decision=decision_out(decision) if decision is not None else None,
         view=item.view,
         source_text=item.source_text,
         target_text=item.target_text,

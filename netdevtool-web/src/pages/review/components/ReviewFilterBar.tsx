@@ -1,13 +1,4 @@
-import type { ReviewStatusFilter } from '../../../api/review'
 import { WARNING_LABELS } from '../deriveItems'
-
-export type StatusFilter = ReviewStatusFilter
-
-const STATUS_OPTIONS: { value: Exclude<StatusFilter, 'all'>; label: string }[] = [
-  { value: 'pending', label: '待审核' },
-  { value: 'accepted', label: '已采纳' },
-  { value: 'skipped', label: '已拒绝' },
-]
 
 interface ModelOption {
   value: string
@@ -16,13 +7,11 @@ interface ModelOption {
 
 interface ReviewFilterBarProps {
   targetModel: string
-  status: StatusFilter
   code: string
   modelOptions: ModelOption[]
   codeOptions: string[]
   filteredCount: number
   onTargetModelChange: (value: string) => void
-  onStatusChange: (value: StatusFilter) => void
   onCodeChange: (value: string) => void
   onReset: () => void
 }
@@ -32,13 +21,11 @@ const selectClass =
 
 export function ReviewFilterBar({
   targetModel,
-  status,
   code,
   modelOptions,
   codeOptions,
   filteredCount,
   onTargetModelChange,
-  onStatusChange,
   onCodeChange,
   onReset,
 }: ReviewFilterBarProps) {
@@ -55,19 +42,6 @@ export function ReviewFilterBar({
           {modelOptions.map((item) => (
             <option key={item.value} value={item.value}>
               目的型号：{item.label}
-            </option>
-          ))}
-        </select>
-
-        <select
-          className={selectClass}
-          value={status}
-          onChange={(event) => onStatusChange(event.target.value as StatusFilter)}
-        >
-          <option value="all">状态：全部</option>
-          {STATUS_OPTIONS.map((item) => (
-            <option key={item.value} value={item.value}>
-              状态：{item.label}
             </option>
           ))}
         </select>

@@ -8,6 +8,7 @@ from app.translate_rule.models import (
     EntitySpec,
     ParameterType,
     ValueFormat,
+    VendorProfile,
 )
 from app.translate_rule.parser import IPV4_PATTERN, VLAN_LIST_PATTERN, ParsedLine, _view_type
 from app.translate_rule.registry import KnowledgeRegistry
@@ -23,6 +24,7 @@ _TONE_BY_CONFIDENCE = {"high": TONE_SUCCESS, "medium": TONE_WARN, "low": TONE_ER
 _TONE_RANK = {TONE_SUCCESS: 0, TONE_WARN: 1, TONE_ERROR: 2}
 _INTF_UNMAPPED_MESSAGE = "接口名无法映射到目标厂商命名，已原样保留，请人工确认"
 _INTF_MAPPED_MESSAGE = "接口名已按厂商命名规则转换，请确认映射结果"
+_DISPLAY_CHANGED_MESSAGE = "显示命令关键字已转换，参数语法请按目标设备确认"
 
 
 def _confidence_tone(confidence: str) -> str:
@@ -113,6 +115,35 @@ class Renderer:
         for item in parsed_lines:
             if item.kind in {"view", "pre"}:
                 # 视图指令与 pre 行不直接输出，由渲染器按目标视图差异补齐
+                continue
+            if item.kind == "display":
+                # 显示命令只替换关键字，但需要先补齐它所在的视图
+                actual_prefix = item.text.strip().split(maxsplit=1)[0].lower()
+                tone = TONE_MUTED
+                if actual_prefix != self._profile.display_prefix:
+                    tone = TONE_WARN
+                    output.warnings.append(
+                        RenderWarning(
+                            item.no, _DISPLAY_CHANGED_MESSAGE, "display_command", "warn"
+                        )
+                    )
+                target_view_path = self._display_view_path(item, current_view_path)
+                if target_view_path != current_view_path:
+                    emitted.clear()
+                current_view_path = self._sync_view_path(
+                    output, item, current_view_path, target_view_path
+                )
+                indent = (
+                    "  " * max(0, len(current_view_path) - 1) if current_view_path else ""
+                )
+                output.lines.append(
+                    RenderedLine(
+                        item.no,
+                        indent + _translate_display(item.text, self._profile),
+                        tone,
+                        item.no,
+                    )
+                )
                 continue
             if item.kind == "other":
                 # 未识别的命令原样保留，标记 error 提示人工处理
@@ -403,6 +434,66 @@ class Renderer:
         output.meta["entities_used"] = used
         return output
 
+    def _display_view_path(
+        self, item: ParsedLine, current_view_path: list[str]
+    ) -> list[str]:
+        """按源视图链路定位目标厂商对应视图；无法定位时保持当前视图。"""
+        if not item.view_path:
+            return list(current_view_path)
+        params = dict(item.view_params)
+        if params.get("intf") and self._source_vendor and self._source_device_type:
+            params["intf"], _ = self._registry.map_interface(
+                params["intf"],
+                source_vendor=self._source_vendor,
+                source_device_type=self._source_device_type,
+                target_vendor=self._target_vendor,
+                target_device_type=self._target_device_type,
+            )
+        view_type = _view_type(item.view_path[-1])
+        for impl in self._registry.implementations_for(
+            self._target_vendor, self._target_device_type
+        ):
+            if (impl.view or "").strip().lower() != view_type:
+                continue
+            spec = self._registry.get_entity(impl.entity_id)
+            if spec is None:
+                continue
+            templates = impl.view_path or spec.view_path
+            rendered = [_render_template(template, params) for template in templates]
+            if any(PLACEHOLDER_RE.search(text) for text in rendered):
+                continue
+            return rendered
+        return list(current_view_path)
+
+    def _sync_view_path(
+        self,
+        output: TranslationOutput,
+        item: ParsedLine,
+        current_view_path: list[str],
+        target_view_path: list[str],
+    ) -> list[str]:
+        """输出从当前视图切换到目标视图所需的退出/进入行。"""
+        common = _common_prefix(current_view_path, target_view_path)
+        if not self._profile.allow_direct_view_switch:
+            for level in range(len(current_view_path), common, -1):
+                output.lines.append(
+                    RenderedLine(
+                        item.no,
+                        "  " * (max(0, level - 2) + 1) + self._profile.view_exit,
+                        TONE_MUTED,
+                    )
+                )
+        for depth in range(common, len(target_view_path)):
+            output.lines.append(
+                RenderedLine(
+                    item.no,
+                    "  " * max(0, depth - 1) + target_view_path[depth],
+                    TONE_MUTED,
+                    item.no,
+                )
+            )
+        return target_view_path
+
     def _match_entered_view(self, command: str, params: dict[str, str]) -> str | None:
         """判断命令是否同时进入了某个视图，返回渲染后的视图行。"""
         tokens = command.split()
@@ -423,6 +514,16 @@ class Renderer:
 def _normalize_command(text: str) -> str:
     """归一化命令文本，用于当前视图内的重复输出判断。"""
     return " ".join(text.split()).lower()
+
+
+def _translate_display(text: str, profile: VendorProfile) -> str:
+    """把显示命令的首个关键字替换为目标厂商关键字。"""
+    stripped = text.strip()
+    if not stripped:
+        return text
+    parts = stripped.split(maxsplit=1)
+    rest = f" {parts[1]}" if len(parts) > 1 else ""
+    return f"{profile.display_prefix}{rest}"
 
 
 def _common_prefix(current: list[str], target: list[str]) -> int:
