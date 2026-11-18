@@ -1,7 +1,6 @@
 id: interface_description
 domain: interface
 description: "配置接口描述信息"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

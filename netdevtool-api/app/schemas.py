@@ -474,6 +474,7 @@ class SupplementCandidateOut(BaseModel):
     prompt_version: str
     response: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
+    rag: dict[str, Any] | None = None
     created_at: datetime
     reviewed_at: datetime | None = None
 

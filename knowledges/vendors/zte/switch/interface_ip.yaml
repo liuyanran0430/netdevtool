@@ -5,6 +5,7 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
+view_path: ["interface {intf}"]
 command: "ip address {ip} {mask}"
 view: interface
 verified: true

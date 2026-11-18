@@ -146,7 +146,15 @@ export function ReviewCard({
         created_at: candidate.created_at,
       })
       if (candidate.status === 'passed') {
-        message.success('候选已生成，自动校验通过')
+        const referenceCount = candidate.rag?.reference_count ?? 0
+        message.success(
+          `候选已生成，自动校验通过${referenceCount ? `，RAG 引用 ${referenceCount} 条手册` : ''}`,
+        )
+        if (candidate.rag?.status === 'rerank_degraded') {
+          message.warning('Rerank 未生效，本次使用混合召回排序')
+        } else if (candidate.rag?.status === 'failed') {
+          message.warning('RAG 召回失败，本次未使用手册证据')
+        }
       } else {
         message.warning('候选已生成，自动校验未通过')
         Modal.info({

@@ -1,7 +1,6 @@
 id: port_link_type
 domain: vlan
 description: "设置接口链路类型（access / trunk / hybrid）"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

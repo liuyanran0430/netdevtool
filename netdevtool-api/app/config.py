@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = ""
     EMBEDDING_DIM: int = 384
 
+    # Rerank 模型（兼容常见 /rerank 接口）
+    RERANK_API_KEY: str = ""
+    RERANK_BASE_URL: str = ""
+    RERANK_MODEL: str = "bge-reranker-v2-m3"
+    RERANK_TIMEOUT: float = 30.0
+
     # 大模型（app/llm 使用）
     LLM_PROVIDER: str = "openai"
     LLM_API_KEY: str = ""

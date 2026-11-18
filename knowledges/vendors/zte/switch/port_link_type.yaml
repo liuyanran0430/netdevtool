@@ -5,6 +5,7 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
+view_path: ["interface {intf}"]
 command: "switchport mode {mode}"
 view: interface
 verified: true

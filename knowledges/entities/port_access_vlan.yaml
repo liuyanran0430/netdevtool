@@ -1,7 +1,6 @@
 id: port_access_vlan
 domain: vlan
 description: "将接口配置为 access 模式并划入指定 VLAN"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

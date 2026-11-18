@@ -1,7 +1,6 @@
 id: ospf_process
 domain: routing
 description: "启动 OSPF 进程并配置 Router ID"
-view_path: ["system-view"]
 parameters:
   process_id:
     type: int

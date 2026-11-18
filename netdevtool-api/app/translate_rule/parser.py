@@ -159,6 +159,8 @@ class SourceParser:
         implementations = registry.implementations_for(vendor, device_type)
         self._implementations = implementations
         profile = registry.get_profile(vendor, device_type)
+        self._root_view = profile.root_view
+        self._root_view_type = _view_type(profile.root_view)
         self._negation_prefix = profile.negation_prefix
         self._display_prefix = profile.display_prefix.lower()
         self._view_types: dict[str, str] = {}
@@ -192,8 +194,8 @@ class SourceParser:
                 continue
             if stripped.startswith("#") or stripped.startswith("!"):
                 if stripped in {"#", "!"}:
-                    # 单独的分节符表示配置块结束，回到系统视图
-                    view_stack[:] = [("system-view", {}, -1)]
+                    # 单独的分节符表示配置块结束，回到根视图
+                    view_stack[:] = [(self._root_view, {}, -1)]
                     pending.clear()
                 parsed.append(ParsedLine(number, raw, "comment"))
                 continue
@@ -203,7 +205,9 @@ class SourceParser:
             if lowered.split(maxsplit=1)[0] == self._display_prefix:
                 current_view = view_stack[-1][0] if view_stack else None
                 current_type = (
-                    self._view_type_of(current_view) if current_view else "system-view"
+                    self._view_type_of(current_view)
+                    if current_view
+                    else self._root_view_type
                 )
                 context: dict[str, str] = {}
                 for _, params, _ in view_stack:
@@ -235,9 +239,11 @@ class SourceParser:
             for _, params, _ in view_stack:
                 context.update(params)
             current_view = view_stack[-1][0] if view_stack else None
-            # 配置导出通常不带 system-view，起始行按根视图处理
+            # 配置导出通常不带根视图，起始行按根视图处理
             current_type = (
-                self._view_type_of(current_view) if current_view else "system-view"
+                self._view_type_of(current_view)
+                if current_view
+                else self._root_view_type
             )
 
             # 否定语义（undo / no）只按当前视图匹配实体，不参与视图进入判断
@@ -249,7 +255,10 @@ class SourceParser:
                 body = stripped[len(prefix) + 1 :].strip()
                 command = self._match(self._command_matchers, body, current_type, pending or None)
                 if command is not None:
-                    params = {**context, **command.template.match(body)}
+                    params = self._normalize_params(
+                        command.implementation,
+                        {**context, **command.template.match(body)},
+                    )
                     pending.clear()
                     parsed.append(
                         ParsedLine(
@@ -301,7 +310,10 @@ class SourceParser:
                     context = {}
                     current_view = None
             if command is not None:
-                params = {**context, **command.template.match(stripped)}
+                params = self._normalize_params(
+                    command.implementation,
+                    {**context, **command.template.match(stripped)},
+                )
                 pending.clear()
                 parsed.append(
                     ParsedLine(
@@ -317,7 +329,7 @@ class SourceParser:
                         self._view_numbers(view_stack, parsed),
                     )
                 )
-                if current_type == "system-view":
+                if current_type == self._root_view_type:
                     # 复合命令可能同时进入子视图（如华为 ospf 1 router-id x），补齐后续行上下文
                     entry = self._match_view_entry(stripped)
                     if entry is not None:
@@ -381,10 +393,11 @@ class SourceParser:
             if spec is None:
                 continue
             templates = [impl.command] if with_command else impl.pre_commands
+            parameters = self._parameters_for(impl, spec)
             for template in templates:
                 if not template:
                     continue
-                compiled = compile_template(template, spec.parameters)
+                compiled = compile_template(template, parameters)
                 buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
         for matchers in buckets.values():
             matchers.sort(key=_matcher_order)
@@ -399,39 +412,82 @@ class SourceParser:
             spec = self._entities.get(impl.entity_id)
             if spec is None or not impl.negative_command:
                 continue
-            compiled = compile_template(impl.negative_command, spec.parameters)
+            compiled = compile_template(
+                impl.negative_command, self._parameters_for(impl, spec)
+            )
             buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
         for matchers in buckets.values():
             matchers.sort(key=_matcher_order)
         return buckets
 
+    @staticmethod
+    def _parameters_for(
+        impl: Implementation, spec: EntitySpec
+    ) -> dict[str, ParameterSpec]:
+        """把厂商取值别名并入参数正则，便于识别源配置中的厂商特有取值。"""
+        if not impl.param_values or not spec.parameters:
+            return spec.parameters
+        parameters = dict(spec.parameters)
+        for name, mapping in impl.param_values.items():
+            parameter = parameters.get(name)
+            aliases = [
+                re.escape(str(value))
+                for value in mapping.values()
+                if str(value).strip()
+            ]
+            if parameter is None or not parameter.pattern or not aliases:
+                continue
+            parameters[name] = parameter.model_copy(
+                update={"pattern": f"(?:{parameter.pattern}|{'|'.join(aliases)})"}
+            )
+        return parameters
+
+    @staticmethod
+    def _normalize_params(
+        impl: Implementation, params: dict[str, str]
+    ) -> dict[str, str]:
+        """把厂商取值的别名还原为规范取值，再交给渲染器映射。"""
+        if not impl.param_values:
+            return params
+        normalized = dict(params)
+        for name, mapping in impl.param_values.items():
+            value = normalized.get(name)
+            if value is None:
+                continue
+            lowered = value.strip().lower()
+            # 已经是规范取值时不还原，避免与厂商别名互相覆盖
+            if lowered in {str(key).strip().lower() for key in mapping}:
+                continue
+            for canonical, vendor_value in mapping.items():
+                if lowered == str(vendor_value).strip().lower():
+                    normalized[name] = canonical
+                    break
+        return normalized
+
     def _build_view_matchers(self) -> list[CompiledTemplate]:
         matchers: list[CompiledTemplate] = []
         seen: set[str] = set()
 
-        def add(template: str, spec: EntitySpec, view_type: str) -> None:
+        def add(template: str, parameters: dict[str, ParameterSpec], view_type: str) -> None:
             self._view_types.setdefault(template, view_type)
             if template in seen:
                 return
             seen.add(template)
-            matchers.append(compile_template(template, spec.parameters))
+            matchers.append(compile_template(template, parameters))
             # 行首片段匹配：用于“配置并进入视图”的复合命令（如 ospf 1 router-id x）
             self._view_prefix_matchers.append(
-                compile_template(template, spec.parameters, prefix=True)
+                compile_template(template, parameters, prefix=True)
             )
 
-        for spec in self._entities.values():
-            for template in spec.view_path:
-                add(template, spec, _view_type(template))
+        # 根视图不再写进实体/厂商的 view_path，单独注册以识别源配置中的根视图行
+        add(self._root_view, {}, _view_type(self._root_view))
 
         for impl in self._implementations:
             spec = self._entities.get(impl.entity_id)
             if spec is None:
                 continue
-            for depth, template in enumerate(impl.view_path):
-                # 厂商视图结构覆盖：沿用规范视图类型，保证 impl.view 匹配不受影响
-                canonical = spec.view_path[depth] if depth < len(spec.view_path) else template
-                add(template, spec, _view_type(canonical))
+            for template in impl.view_path:
+                add(template, spec.parameters, _view_type(template))
 
         matchers.sort(key=lambda item: (-item.literal_length, len(item.param_names)))
         return matchers
@@ -489,10 +545,8 @@ class SourceParser:
         candidates = [*self._command_matchers.get(first, []), *self._command_matchers.get("", [])]
         for matcher in candidates:
             impl = matcher.implementation
-            spec = self._entities.get(impl.entity_id)
-            if spec is None or not spec.view_path:
-                continue
-            if impl.view.strip().lower() != _view_type(spec.view_path[0]):
+            # 根视图命令：实现所在视图即为厂商根视图
+            if (impl.view or "").strip().lower() != self._root_view_type:
                 continue
             if matcher.template.match(text) is not None:
                 return matcher

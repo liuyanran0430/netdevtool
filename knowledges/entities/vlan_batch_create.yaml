@@ -1,7 +1,6 @@
 id: vlan_batch_create
 domain: vlan
 description: "批量创建 VLAN 或创建 VLAN 范围"
-view_path: ["system-view"]
 parameters:
   vlan_ids:
     type: string

@@ -123,10 +123,6 @@ def _payload(
         payload["parent_index"] = chunk.parent_index
     if chunk.parent_text:
         payload["parent_text"] = chunk.parent_text
-    for key in ("vendor", "product", "version", "function_tag"):
-        value = metadata.get(key)
-        if isinstance(value, (str, int, float)):
-            payload[key] = value
     if metadata:
         payload["metadata"] = metadata
     return payload

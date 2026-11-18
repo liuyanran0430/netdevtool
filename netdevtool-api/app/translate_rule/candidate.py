@@ -106,9 +106,8 @@ def allowed_views(
     registry: KnowledgeRegistry, vendor: str, device_type: str
 ) -> set[str]:
     """目标厂商允许的视图名集合，用于视图白名单校验。"""
-    views = {"system-view"}
-    for spec in registry.entities.values():
-        views.update(_view_name(item) for item in spec.view_path)
+    root_view = registry.get_profile(vendor, device_type).root_view
+    views = {"system-view", _view_name(root_view)}
     for impl in registry.implementations_for(vendor, device_type):
         if impl.view:
             views.add(_view_name(impl.view))

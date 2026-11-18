@@ -35,6 +35,24 @@ class KnowledgeDocumentRepository:
         )
         return list(self.db.scalars(stmt).all())
 
+    def list_indexed_by_metadata(
+        self, *, kb_id: int, vendor: str, model: str, status: str
+    ) -> list[KnowledgeDocument]:
+        """返回已索引且元数据精确匹配的文档；在 Python 中比较以避免数据库 collation 影响。"""
+        stmt = select(KnowledgeDocument).where(
+            KnowledgeDocument.kb_id == kb_id,
+            KnowledgeDocument.status == KnowledgeDocumentStatus.indexed,
+        )
+        documents = list(self.db.scalars(stmt).all())
+        return [
+            document
+            for document in documents
+            if isinstance(document.metadata_json, dict)
+            and document.metadata_json.get("vendor") == vendor
+            and document.metadata_json.get("model") == model
+            and document.metadata_json.get("status") == status
+        ]
+
     def list_by_ids(self, ids: list[int]) -> list[KnowledgeDocument]:
         if not ids:
             return []

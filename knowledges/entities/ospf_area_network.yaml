@@ -1,7 +1,6 @@
 id: ospf_area_network
 domain: routing
 description: "在指定 OSPF 区域内宣告网络"
-view_path: ["system-view", "ospf {process_id}", "area {area_id}"]
 parameters:
   process_id:
     type: int

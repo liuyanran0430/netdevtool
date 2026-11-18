@@ -13,6 +13,10 @@ class KnowledgeBaseRepository:
     def get(self, base_id: int) -> KnowledgeBase | None:
         return self.db.get(KnowledgeBase, base_id)
 
+    def find_by_name(self, name: str) -> KnowledgeBase | None:
+        stmt = select(KnowledgeBase).where(KnowledgeBase.name == name)
+        return self.db.scalars(stmt).first()
+
     def list_all(self) -> list[KnowledgeBase]:
         """按 id 升序返回全部知识库。"""
         stmt = select(KnowledgeBase).order_by(KnowledgeBase.id)

@@ -66,7 +66,6 @@ class EntitySpec(BaseModel):
     id: str = Field(min_length=1)
     domain: str | None = None
     description: str | None = None
-    view_path: list[str] = Field(default_factory=list)
     parameters: dict[str, ParameterSpec] = Field(default_factory=dict)
     semantic_notes: list[str] = Field(default_factory=list)
 
@@ -100,6 +99,8 @@ class Implementation(BaseModel):
     view_path: list[str] = Field(default_factory=list)
     sub_commands: list[str] = Field(default_factory=list)
     param_formats: dict[str, str] = Field(default_factory=dict)
+    # 参数取值映射：实体参数值 → 本厂商取值（如 stp → sstp）
+    param_values: dict[str, dict[str, str]] = Field(default_factory=dict)
     verified: bool = False
     unsupported_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -129,6 +130,19 @@ class Implementation(BaseModel):
                 raise ValueError(f"param_formats.{name} 仅支持 {sorted(allowed)}")
         return value
 
+    @field_validator("param_values")
+    @classmethod
+    def _check_param_values(
+        cls, value: dict[str, dict[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        for name, mapping in value.items():
+            if not name.strip():
+                raise ValueError("param_values 的参数名不能为空")
+            for source, target in mapping.items():
+                if not str(source).strip() or not str(target).strip():
+                    raise ValueError(f"param_values.{name} 的取值不能为空")
+        return value
+
     @model_validator(mode="after")
     def _validate_command(self) -> "Implementation":
         if self.supported and not self.command:
@@ -145,6 +159,8 @@ class VendorProfile(BaseModel):
 
     vendor: str = Field(min_length=1)
     device_type: str = Field(min_length=1)
+    # 根视图（全局配置视图），如 system-view / configure terminal
+    root_view: str = Field(default="system-view", min_length=1)
     view_exit: str = Field(default="quit", min_length=1)
     view_return: str = Field(default="return", min_length=1)
     negation_prefix: str = Field(default="undo", min_length=1)
@@ -164,6 +180,14 @@ class VendorProfile(BaseModel):
         normalized = value.strip().lower()
         if not normalized:
             raise ValueError("display_prefix 不能为空")
+        return normalized
+
+    @field_validator("root_view")
+    @classmethod
+    def _normalize_root_view(cls, value: str) -> str:
+        normalized = " ".join(value.strip().lower().split())
+        if not normalized:
+            raise ValueError("root_view 不能为空")
         return normalized
 
 

@@ -6,7 +6,7 @@ os: V6.00.03.94
 supported: true
 confidence: high
 command: "ip route {prefix} {mask} {next_hop}"
-view: system-view
+view: configure
 verified: true
 warnings:
   - "ZTE 配置具体静态路由严格使用 'ip route'，不存在 'ip route-static' 别名。"

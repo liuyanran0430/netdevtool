@@ -5,10 +5,10 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
+pre_commands:
+  - "stp enable"
 command: stp mode {mode}
 view: system-view
-view_path:
-- system-view
 verified: true
 sources:
   - "H3C Comware V7 STP 命令：stp mode stp/rstp/mstp"

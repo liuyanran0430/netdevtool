@@ -1,7 +1,6 @@
 id: port_trunk_vlan
 domain: vlan
 description: "将接口配置为 trunk 模式并放行指定 VLAN"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

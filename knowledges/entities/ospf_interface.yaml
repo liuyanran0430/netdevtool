@@ -1,7 +1,6 @@
 id: ospf_interface
 domain: routing
 description: "在接口上直接使能 OSPF 并指定区域（替代 network 宣告方式）"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

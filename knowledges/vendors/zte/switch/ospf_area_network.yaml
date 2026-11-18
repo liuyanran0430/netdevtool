@@ -5,9 +5,7 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
-view_path:
-  - "system-view"
-  - "router ospf {process_id}"
+view_path: ["router ospf {process_id}"]
 command: "network {network} {wildcard_mask} area {area_id}"
 view: ospf
 verified: true

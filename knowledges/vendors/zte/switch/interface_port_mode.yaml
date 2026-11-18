@@ -5,6 +5,7 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: medium
+view_path: ["interface {intf}"]
 command: "no router-interface"
 negative_command: "router-interface"
 view: interface

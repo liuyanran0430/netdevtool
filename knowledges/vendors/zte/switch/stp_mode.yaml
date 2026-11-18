@@ -5,10 +5,14 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
+pre_commands:
+  - "enable"
+view_path: ["spantree"]
 command: spanning-tree mode {mode}
-view: system-view
-view_path:
-- system-view
+param_values:
+  mode:
+    stp: sstp
+view: configure
 verified: true
 sources:
   - "中兴 VRP：spanning-tree mode {mode}"

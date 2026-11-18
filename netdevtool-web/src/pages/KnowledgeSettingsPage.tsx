@@ -668,26 +668,37 @@ function ChunkingSection({
   chunking,
   patchChunking,
   errors,
+  locked,
 }: {
   chunking: KnowledgeConfig['chunking']
   patchChunking: (
     u: (c: KnowledgeConfig['chunking']) => KnowledgeConfig['chunking'],
   ) => void
   errors: ChunkingErrors
+  locked?: boolean
 }) {
   const selected = chunking.mode
   const expanded = selected
 
-  const select = (mode: KnowledgeConfig['chunking']['mode']) =>
+  const select = (mode: KnowledgeConfig['chunking']['mode']) => {
+    if (locked) return
     patchChunking(() => ({ ...chunking, mode }))
+  }
 
   return (
     <SectionCard title="分段模式" sub="Chunking Strategy">
       <p className="mb-3 text-[12px] text-ink-500">
         选择文档的切分方式，平衡检索精度与上下文完整性
       </p>
+      {locked ? (
+        <p className="mb-3 text-[12px] text-ink-400">
+          知识库已有文档切分，分段模式不可修改
+        </p>
+      ) : null}
 
-      <div className="flex flex-col gap-2">
+      <div
+        className={`flex flex-col gap-2${locked ? ' opacity-60' : ''}`}
+      >
         {chunkingOptions.map((o) => {
           const isSelected = selected === o.value
           return (
@@ -696,13 +707,18 @@ function ChunkingSection({
               className={`rounded-lg border bg-white transition-colors ${
                 isSelected
                   ? 'border-brand-line bg-white'
-                  : 'border-line hover:border-brand-line'
+                  : locked
+                    ? 'border-line'
+                    : 'border-line hover:border-brand-line'
               }`}
             >
               <button
                 type="button"
                 onClick={() => select(o.value)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left"
+                disabled={locked}
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left${
+                  locked ? ' cursor-not-allowed' : ''
+                }`}
               >
                 <span
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
@@ -1049,13 +1065,24 @@ function ChunkingSection({
 function IndexingSection({
   mode,
   setMode,
+  locked,
 }: {
   mode: KnowledgeConfig['indexing']
   setMode: (m: KnowledgeConfig['indexing']) => void
+  locked?: boolean
 }) {
   return (
     <SectionCard title="索引模式" sub="Indexing Mode">
-      <div className="flex flex-col gap-2.5 md:flex-row">
+      {locked ? (
+        <p className="mb-3 text-[12px] text-ink-400">
+          知识库已有文档切分，索引模式不可修改
+        </p>
+      ) : null}
+      <div
+        className={`flex flex-col gap-2.5 md:flex-row${
+          locked ? ' opacity-60' : ''
+        }`}
+      >
         {[
           {
             key: 'high' as const,
@@ -1074,11 +1101,14 @@ function IndexingSection({
               type="button"
               key={o.key}
               onClick={() => setMode(o.key)}
+              disabled={locked}
               className={`flex h-[64px] flex-1 items-center gap-3 rounded-lg border px-4 text-left transition-colors ${
                 active
                   ? 'border-brand-line bg-[#F0F4FA]'
-                  : 'border-line bg-white hover:border-brand-line'
-              }`}
+                  : locked
+                    ? 'border-line bg-white'
+                    : 'border-line bg-white hover:border-brand-line'
+              }${locked ? ' cursor-not-allowed' : ''}`}
             >
               <span
                 className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
@@ -2315,6 +2345,8 @@ export function KnowledgeSettingsPage() {
     Object.keys(hybridErrors).length > 0
 
   const canSave = isDirty && !hasErrors && !saving
+  // 已有文档后，分段模式与索引模式会影响既有切分结果，锁定不允许修改
+  const hasDocuments = docsState.docs.length > 0
 
   const footerText = useMemo(() => {
     const parts: string[] = []
@@ -2481,10 +2513,12 @@ export function KnowledgeSettingsPage() {
               chunking={config.chunking}
               patchChunking={patchChunking}
               errors={chunkingErrors}
+              locked={hasDocuments}
             />
             <IndexingSection
               mode={config.indexing}
               setMode={setIndexing}
+              locked={hasDocuments}
             />
             <RetrievalSection
               retrieval={config.retrieval}

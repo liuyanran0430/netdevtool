@@ -93,11 +93,17 @@ class Renderer:
         self._source_device_type = source_device_type.strip().lower() if source_device_type else None
         self._profile = registry.get_profile(self._target_vendor, self._target_device_type)
         templates: list[str] = []
-        for spec in registry.entities.values():
-            templates.extend(spec.view_path)
         for impl in registry.implementations_for(self._target_vendor, self._target_device_type):
             templates.extend(impl.view_path)
         self._view_templates = list(dict.fromkeys(templates))
+        # 目标厂商的根视图（如 system-view / configure terminal），输出时只进入一次
+        self._root_view = self._profile.root_view
+
+    def _relative_views(self, templates: list[str]) -> list[str]:
+        """去掉模板里重复书写的根视图，视图路径统一从根视图之后开始。"""
+        if templates and templates[0].strip().lower() == self._root_view:
+            return list(templates[1:])
+        return list(templates)
 
     def render(self, parsed_lines: list[ParsedLine], duration_ms: int = 0) -> TranslationOutput:
         output = TranslationOutput()
@@ -111,6 +117,20 @@ class Renderer:
         current_view_path: list[str] = []
         # 当前视图内已输出的命令，用于避免前置命令与独立实体重复输出
         emitted: set[str] = set()
+        # 翻译一开始就进入目标厂商根视图，后续只需补齐相对视图
+        first_item = next(
+            (
+                item
+                for item in parsed_lines
+                if item.kind in {"command", "display", "other"}
+            ),
+            None,
+        )
+        if first_item is not None:
+            output.lines.append(
+                RenderedLine(first_item.no, self._root_view, TONE_MUTED)
+            )
+            current_view_path = [self._root_view]
 
         for item in parsed_lines:
             if item.kind in {"view", "pre"}:
@@ -156,7 +176,7 @@ class Renderer:
             if item.kind in {"blank", "comment"}:
                 if item.kind == "comment" and item.text.strip() in {"#", "!"} and current_view_path:
                     # 分节符已回到系统视图，后续命令无需再补齐 quit
-                    current_view_path = ["system-view"]
+                    current_view_path = [self._root_view]
                     emitted.clear()
                 output.lines.append(RenderedLine(item.no, item.text, TONE_MUTED, item.no))
                 continue
@@ -218,6 +238,8 @@ class Renderer:
 
             # 按目标厂商习惯转换参数分隔符（如 VLAN 列表 to / hyphen）
             params = _apply_param_formats(entity.params, implementation.param_formats)
+            # 按目标厂商取值映射转换参数（如 stp → sstp）
+            params = _apply_param_values(params, implementation.param_values)
 
             cross_vendor = bool(
                 self._source_vendor and self._source_vendor != self._target_vendor
@@ -235,8 +257,11 @@ class Renderer:
                 params = {**params, "intf": mapped}
 
             # 厂商实现可覆盖规范视图结构（如中兴 router ospf 无 area 子视图）
-            view_templates = implementation.view_path or spec.view_path
-            view_path = [_render_template(template, params) for template in view_templates]
+            view_templates = self._relative_views(implementation.view_path)
+            view_path = [
+                self._root_view,
+                *(_render_template(template, params) for template in view_templates),
+            ]
             if not view_path and implementation.view:
                 view_path = [implementation.view]
 
@@ -252,13 +277,19 @@ class Renderer:
                     )
             for depth in range(common, len(view_path)):
                 view_tone = TONE_MUTED
+                # view_path[0] 是根视图，相对模板从 depth-1 开始对齐
+                template = (
+                    view_templates[depth - 1]
+                    if 0 <= depth - 1 < len(view_templates)
+                    else None
+                )
                 # 视图行的源行号：进入该视图的那一行，warning 也挂在该行上
-                view_source_no = (item.view_nos or {}).get(_view_type(view_templates[depth]))
-                if (
-                    cross_vendor
-                    and depth < len(view_templates)
-                    and "{intf}" in view_templates[depth]
-                ):
+                view_source_no = (
+                    (item.view_nos or {}).get(_view_type(template))
+                    if template is not None
+                    else None
+                )
+                if cross_vendor and template is not None and "{intf}" in template:
                     # 接口名经过厂商转换或无法识别，均按 medium 置信度提示复核
                     view_tone = TONE_WARN
                     message, code = (
@@ -455,14 +486,11 @@ class Renderer:
         ):
             if (impl.view or "").strip().lower() != view_type:
                 continue
-            spec = self._registry.get_entity(impl.entity_id)
-            if spec is None:
-                continue
-            templates = impl.view_path or spec.view_path
+            templates = self._relative_views(impl.view_path)
             rendered = [_render_template(template, params) for template in templates]
             if any(PLACEHOLDER_RE.search(text) for text in rendered):
                 continue
-            return rendered
+            return [self._root_view, *rendered]
         return list(current_view_path)
 
     def _sync_view_path(
@@ -538,6 +566,25 @@ def _render_template(template: str, params: dict[str, str]) -> str:
         return params.get(matched.group(1), matched.group(0))
 
     return PLACEHOLDER_RE.sub(replace, template)
+
+
+def _apply_param_values(
+    params: dict[str, str], mapping: dict[str, dict[str, str]]
+) -> dict[str, str]:
+    """按厂商实现的 param_values 转换参数取值，未配置映射的取值原样保留。"""
+    if not mapping:
+        return params
+    converted = dict(params)
+    for name, values in mapping.items():
+        value = converted.get(name)
+        if value is None:
+            continue
+        target = values.get(value)
+        if target is None:
+            target = values.get(value.strip().lower())
+        if target:
+            converted[name] = target
+    return converted
 
 
 def _apply_param_formats(params: dict[str, str], formats: dict[str, str]) -> dict[str, str]:

@@ -1,7 +1,6 @@
 id: interface_ip
 domain: interface
 description: "配置三层接口的 IPv4 地址与掩码"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

@@ -5,6 +5,7 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
+view_path: ["interface {intf}"]
 command: "port link-mode bridge"
 negative_command: "port link-mode route"
 view: interface

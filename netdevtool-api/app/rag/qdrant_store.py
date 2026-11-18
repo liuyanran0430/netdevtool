@@ -15,6 +15,8 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
+    ScoredPoint,
+    SparseVector,
     SparseVectorParams,
     VectorParams,
 )
@@ -26,6 +28,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.INTEGER,
     "chunk_type": PayloadSchemaType.KEYWORD,
     "metadata.vendor": PayloadSchemaType.KEYWORD,
+    "metadata.model": PayloadSchemaType.KEYWORD,
     "metadata.version": PayloadSchemaType.KEYWORD,
     "metadata.status": PayloadSchemaType.KEYWORD,
 }
@@ -197,3 +200,36 @@ class QdrantStore:
             exact=True,
         )
         return int(result.count)
+
+    def search_dense(
+        self, *, vector: list[float], query_filter: Filter, limit: int
+    ) -> list[ScoredPoint]:
+        """使用命名 dense 向量检索，不创建或切换集合。"""
+        result = self.client.query_points(
+            collection_name=self._query_collection(),
+            query=vector,
+            using="dense",
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return list(result.points)
+
+    def search_sparse(
+        self, *, vector: SparseVector, query_filter: Filter, limit: int
+    ) -> list[ScoredPoint]:
+        """使用命名 sparse 向量检索，不创建或切换集合。"""
+        result = self.client.query_points(
+            collection_name=self._query_collection(),
+            query=vector,
+            using="sparse",
+            query_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return list(result.points)
+
+    def _query_collection(self) -> str:
+        return self.alias if self._is_server else self.name

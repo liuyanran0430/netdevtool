@@ -1,7 +1,6 @@
 id: static_route
 domain: routing
 description: "配置 IPv4 静态路由"
-view_path: ["system-view"]
 parameters:
   prefix:
     type: string

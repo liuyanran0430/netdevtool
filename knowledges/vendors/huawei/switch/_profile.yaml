@@ -1,6 +1,9 @@
 vendor: huawei
 device_type: switch
 
+# 根视图（全局配置视图）
+root_view: system-view
+
 # 退出当前视图 / 回到用户视图
 view_exit: quit
 view_return: return

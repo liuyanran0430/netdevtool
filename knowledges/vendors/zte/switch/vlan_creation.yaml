@@ -6,7 +6,7 @@ os: V6.00.03.94
 supported: true
 confidence: medium
 command: "vlan {vlan_id}"
-view: system-view
+view: configure
 verified: false
 warnings:
   - "ZXR10 全局配置下使用 vlan vlan-id 创建 VLAN，需现场核对本机版本是否一致"

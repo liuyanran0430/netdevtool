@@ -1,7 +1,6 @@
 id: interface_port_mode
 domain: interface
 description: "切换接口二层/三层模式"
-view_path: ["system-view", "interface {intf}"]
 parameters:
   intf:
     type: string

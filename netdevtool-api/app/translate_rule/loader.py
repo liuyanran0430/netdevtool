@@ -106,12 +106,6 @@ def _load_entities(entities_dir: Path) -> dict[str, EntitySpec]:
         if spec.id in entities:
             errors.append(f"{rel}: 实体 {spec.id} 重复定义")
             continue
-        missing = set()
-        for template in spec.view_path:
-            missing |= extract_placeholders(template) - set(spec.parameters)
-        if missing:
-            errors.append(f"{rel}: view_path 使用了未定义参数 {sorted(missing)}")
-            continue
         entities[spec.id] = spec
 
     if errors:
@@ -314,7 +308,6 @@ def _register_supplement_entry(
     entities[entity_id] = EntitySpec(
         id=entity_id,
         description=f"补充知识库：{source.command}",
-        view_path=list(source.view_path),
         parameters=parameters,
     )
     source_impl = Implementation(

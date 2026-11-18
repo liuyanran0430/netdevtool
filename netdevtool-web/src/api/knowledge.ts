@@ -19,6 +19,12 @@ export interface SupplementCandidateDto {
     confidence?: string
   } | null
   validation: SupplementValidation | null
+  rag?: {
+    status: string
+    reference_count: number
+    reason?: string
+    rerank_error?: string
+  } | null
   created_at: string
   reviewed_at: string | null
 }

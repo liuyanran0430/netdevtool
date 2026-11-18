@@ -8,7 +8,7 @@ confidence: high
 command: "vlan {vlan_ids}"
 param_formats:
   vlan_ids: hyphen
-view: system-view
+view: configure
 verified: true
 sources:
   - "ZXR10 批量创建 VLAN：vlan 100-200（范围）或 vlan 10,20（列表）"

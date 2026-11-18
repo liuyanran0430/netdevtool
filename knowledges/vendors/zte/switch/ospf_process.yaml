@@ -8,7 +8,7 @@ confidence: high
 command: "router ospf {process_id}"
 sub_commands:
   - "router-id {router_id}"
-view: system-view
+view: configure
 verified: true
 warnings:
   - "ZXR10 的 Router ID 需在 OSPF 视图内单独配置，源配置未携带 router-id 时需人工补充"

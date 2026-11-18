@@ -5,6 +5,7 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
+view_path: ["ospf {process_id}", "area {area_id}"]
 command: "network {network} {wildcard_mask}"
 view: area
 verified: true

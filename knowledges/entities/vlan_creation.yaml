@@ -1,7 +1,6 @@
 id: vlan_creation
 domain: vlan
 description: "创建 VLAN 并可选配置名称"
-view_path: ["system-view"]
 parameters:
   vlan_id:
     type: int

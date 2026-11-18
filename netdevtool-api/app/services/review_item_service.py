@@ -43,8 +43,10 @@ from app.translate_rule.candidate import normalize_command_template
 
 logger = logging.getLogger(__name__)
 
-# 接口名映射与参数校验失败不进入审核池，仅在翻译页审计面板处理
-EXCLUDED_CODES = frozenset({"intf_translated", "intf_unmapped", "invalid_param"})
+# 接口名映射、参数校验失败与显示命令转换不进入审核池，仅在翻译页审计面板处理
+EXCLUDED_CODES = frozenset(
+    {"intf_translated", "intf_unmapped", "invalid_param", "display_command"}
+)
 
 QUIT_RE = re.compile(r"^quit$", re.IGNORECASE)
 VIEW_FLUSH_RE = re.compile(r"^[#!]$")
