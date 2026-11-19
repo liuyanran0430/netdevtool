@@ -152,7 +152,9 @@ def test_hybrid_recall_filters_metadata_and_uses_rerank_order(
     assert result.references[0]["score_type"] == "rerank"
     query = result.trace["query"]
     assert "源命令说明：配置生成树协议模式" in query
-    mocks.encode_dense.assert_called_once_with([query])
+    mocks.encode_dense.assert_called_once_with(
+        [query], biz_type="knowledge_gap", trace_id=None
+    )
     mocks.sparse_encode.assert_called_once_with(query)
     rerank_args = mocks.rerank.call_args.kwargs
     assert rerank_args["query"] == query
@@ -246,6 +248,8 @@ def _configure_rerank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
     monkeypatch.setattr(settings, "RERANK_MODEL", "bge-reranker-v2-m3")
     monkeypatch.setattr(settings, "RERANK_API_KEY", "test-key")
+    # 计量落库与检索无关，测试中屏蔽以免写入真实数据库
+    monkeypatch.setattr(reranker, "record_ai_call", lambda **kwargs: None)
 
 
 def test_rerank_client_sends_standard_request_and_sorts_scores(

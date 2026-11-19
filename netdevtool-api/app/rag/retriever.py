@@ -133,6 +133,7 @@ def retrieve_candidate_references(
     target_vendor: str,
     target_model: str,
     source_description: str = "",
+    trace_id: str | None = None,
 ) -> CandidateRAGResult:
     query = _build_query(
         raw_command=raw_command,
@@ -206,7 +207,9 @@ def retrieve_candidate_references(
         with QdrantStore(base.vector_store_name) as store:
             if dense_enabled:
                 try:
-                    vector = encode_dense([query])[0][0]
+                    vector = encode_dense(
+                        [query], biz_type="knowledge_gap", trace_id=trace_id
+                    )[0][0]
                     dense_points = store.search_dense(
                         vector=vector, query_filter=query_filter, limit=_RECALL_LIMIT
                     )
@@ -252,6 +255,8 @@ def retrieve_candidate_references(
                 for recall in candidates
             ],
             top_n=top_k,
+            biz_type="knowledge_gap",
+            trace_id=trace_id,
         )
         threshold = float(base.hybrid_score_threshold)
         selected = [item for item in rerank_scores if item.score >= threshold][:top_k]

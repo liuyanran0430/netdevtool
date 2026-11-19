@@ -10,8 +10,6 @@ export interface SupplementCandidateDto {
   id: number
   gap_id: number
   status: 'pending' | 'passed' | 'failed' | 'accepted' | 'rejected'
-  llm_model: string
-  prompt_version: string
   response: {
     target_command?: string
     target_view_path?: string[]

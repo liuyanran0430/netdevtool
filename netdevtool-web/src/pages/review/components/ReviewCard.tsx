@@ -142,7 +142,6 @@ export function ReviewCard({
         views: candidate.response?.target_view_path ?? [],
         reasoning: candidate.response?.reasoning ?? null,
         passed: candidate.validation?.passed ?? false,
-        llm_model: candidate.llm_model,
         created_at: candidate.created_at,
       })
       if (candidate.status === 'passed') {

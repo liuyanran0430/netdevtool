@@ -30,7 +30,6 @@ export interface ReviewCandidateDto {
   views: string[]
   reasoning: string | null
   passed: boolean
-  llm_model: string
   created_at: string
 }
 

@@ -10,7 +10,6 @@ from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.llm import LLMStructureError, invoke_structured, is_configured
 from app.models import (
     Device,
@@ -25,7 +24,7 @@ from app.repositories.device_repository import DeviceRepository
 from app.repositories.knowledge_gap_repository import KnowledgeGapRepository
 from app.repositories.supplement_candidate_repository import SupplementCandidateRepository
 from app.repositories.supplement_file_repository import SupplementFileRepository
-from app.services.llm_billing import llm_run
+from app.services.ai_billing import llm_run
 from app.translate_rule import get_registry, reload_registry
 from app.translate_rule.candidate import (
     CandidatePayload,
@@ -36,8 +35,6 @@ from app.translate_rule.candidate import (
     validate_candidate,
 )
 from app.translate_rule.parser import compile_template
-
-PROMPT_VERSION = "v3"
 
 SYSTEM_PROMPT = """你是网络设备配置翻译专家，负责把源厂商命令翻译为目标厂商等价命令。
 
@@ -180,6 +177,8 @@ def generate_candidate(
 
         raise LLMNotConfigured("未配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
 
+    # knowledge_gap 场景直接用缺口主键作为 trace_id，便于在 ai_runs 聚合检索与生成的用量
+    trace_id = str(gap.id)
     rag = retrieve_candidate_references(
         db,
         raw_command=sample,
@@ -190,6 +189,7 @@ def generate_candidate(
         source_description=source_description,
         target_vendor=target_key,
         target_model=target_model,
+        trace_id=trace_id,
     )
     context["references"] = rag.references
     context_text = json.dumps(context, ensure_ascii=False, indent=2)
@@ -203,9 +203,7 @@ def generate_candidate(
     )
     repository = SupplementCandidateRepository(db)
     try:
-        with llm_run(
-            "supplement_candidate", biz_type="knowledge_gap", biz_id=gap.id
-        ) as usages:
+        with llm_run(biz_type="knowledge_gap", trace_id=trace_id) as usages:
             call = invoke_structured(
                 CANDIDATE_PROMPT, {"context": context_text}, CandidatePayload
             )
@@ -215,8 +213,6 @@ def generate_candidate(
         return repository.create(
             SupplementCandidate(
                 gap_id=gap.id,
-                llm_model=settings.LLM_MODEL,
-                prompt_version=PROMPT_VERSION,
                 request_json=request_json,
                 response_json=json.dumps({"raw": exc.content}, ensure_ascii=False),
                 validation_json=json.dumps(
@@ -252,8 +248,6 @@ def generate_candidate(
     candidate = repository.create(
         SupplementCandidate(
             gap_id=gap.id,
-            llm_model=settings.LLM_MODEL,
-            prompt_version=PROMPT_VERSION,
             request_json=request_json,
             response_json=json.dumps(payload.model_dump(), ensure_ascii=False),
             validation_json=json.dumps(validation.to_dict(), ensure_ascii=False),
@@ -420,8 +414,6 @@ def serialize_candidate(candidate: SupplementCandidate) -> dict:
         "id": candidate.id,
         "gap_id": candidate.gap_id,
         "status": candidate.status,
-        "llm_model": candidate.llm_model,
-        "prompt_version": candidate.prompt_version,
         "response": _loads(candidate.response_json),
         "validation": _loads(candidate.validation_json),
         "rag": request.get("rag"),
@@ -430,17 +422,18 @@ def serialize_candidate(candidate: SupplementCandidate) -> dict:
     }
 
 
-_ROLE_MAP = {"system": "system", "human": "user", "ai": "assistant"}
+_ROLE_MAP = {"human": "user", "ai": "assistant"}
 
 
 def _message_dicts(context_text: str) -> list[dict[str, str]]:
-    """把链上的 Prompt 渲染为可回放的 OpenAI 消息字典。"""
+    """渲染 user 提示词为可回放的消息字典；system 提示词不入库。"""
     return [
         {
             "role": _ROLE_MAP.get(message.type, message.type),
             "content": str(message.content),
         }
         for message in CANDIDATE_PROMPT.format_messages(context=context_text)
+        if message.type != "system"
     ]
 
 

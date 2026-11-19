@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from urllib import error, request
 
 from app.config import settings
+from app.models import AiRunKind, AiRunStatus
+from app.services.ai_billing import elapsed_ms, record_ai_call
 
 
 @dataclass(frozen=True)
@@ -20,13 +23,56 @@ class RerankError(RuntimeError):
 
 
 def rerank_documents(
-    *, query: str, documents: list[str], top_n: int
+    *,
+    query: str,
+    documents: list[str],
+    top_n: int,
+    biz_type: str | None = None,
+    trace_id: str | None = None,
 ) -> list[RerankScore]:
+    """调用 /rerank 并记录一次 ai_runs。未配置时直接报错，不计入用量。"""
     if not documents:
         return []
     if not settings.RERANK_BASE_URL or not settings.RERANK_MODEL:
         raise RerankError("未配置 RERANK_BASE_URL 或 RERANK_MODEL")
 
+    input_chars = len(query) + sum(len(document) for document in documents)
+    started = time.perf_counter()
+    try:
+        scores = _request_rerank(query=query, documents=documents, top_n=top_n)
+    except RerankError as exc:
+        record_ai_call(
+            kind=AiRunKind.rerank,
+            provider="rerank",
+            model=settings.RERANK_MODEL,
+            trace_id=trace_id,
+            biz_type=biz_type,
+            input_count=len(documents),
+            input_chars=input_chars,
+            top_n=top_n,
+            latency_ms=elapsed_ms(started),
+            status=AiRunStatus.failed,
+            error_message=str(exc),
+        )
+        raise
+    record_ai_call(
+        kind=AiRunKind.rerank,
+        provider="rerank",
+        model=settings.RERANK_MODEL,
+        trace_id=trace_id,
+        biz_type=biz_type,
+        input_count=len(documents),
+        input_chars=input_chars,
+        top_n=top_n,
+        latency_ms=elapsed_ms(started),
+        status=AiRunStatus.success,
+    )
+    return scores
+
+
+def _request_rerank(
+    *, query: str, documents: list[str], top_n: int
+) -> list[RerankScore]:
     base_url = settings.RERANK_BASE_URL.rstrip("/")
     endpoint = base_url if base_url.endswith("/rerank") else f"{base_url}/rerank"
     headers = {"Content-Type": "application/json"}

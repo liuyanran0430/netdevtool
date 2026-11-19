@@ -9,11 +9,14 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
 
 from openai import OpenAI
 from qdrant_client.models import SparseVector
 
 from app.config import settings
+from app.models import AiRunKind, AiRunStatus
+from app.services.ai_billing import elapsed_ms, record_ai_call
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_./:-]+|[\u4e00-\u9fff]")
 _BATCH_SIZE = 32
@@ -79,7 +82,8 @@ def embedding_provider() -> str:
     return "local-hash"
 
 
-def _remote_dense(texts: list[str]) -> list[list[float]]:
+def _remote_dense(texts: list[str]) -> tuple[list[list[float]], int]:
+    """调用远程 embeddings 端点，返回向量与输入 token 数。"""
     client = OpenAI(
         api_key=settings.EMBEDDING_API_KEY,
         base_url=settings.EMBEDDING_BASE_URL,
@@ -87,22 +91,65 @@ def _remote_dense(texts: list[str]) -> list[list[float]]:
         max_retries=0,
     )
     vectors: list[list[float]] = []
+    prompt_tokens = 0
     for start in range(0, len(texts), _BATCH_SIZE):
         batch = texts[start : start + _BATCH_SIZE]
         response = client.embeddings.create(
             model=settings.EMBEDDING_MODEL, input=batch
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
         vectors.extend([list(item.embedding) for item in response.data])
-    return vectors
+    return vectors, prompt_tokens
 
 
-def encode_dense(texts: list[str]) -> tuple[list[list[float]], str]:
-    """批量生成 dense 向量，返回向量与使用的 provider。"""
+def encode_dense(
+    texts: list[str],
+    *,
+    biz_type: str | None = None,
+    trace_id: str | None = None,
+) -> tuple[list[list[float]], str]:
+    """批量生成 dense 向量，返回向量与使用的 provider，并记录一次 ai_runs。"""
     if not texts:
         return [], embedding_provider()
-    if _remote_configured():
+
+    remote = _remote_configured()
+    provider = "openai" if remote else "local-hash"
+    model = settings.EMBEDDING_MODEL if remote else "local-hash"
+    input_chars = sum(len(text) for text in texts)
+    started = time.perf_counter()
+
+    def record(
+        *,
+        status: AiRunStatus,
+        prompt_tokens: int = 0,
+        error_message: str | None = None,
+    ) -> None:
+        record_ai_call(
+            kind=AiRunKind.embedding,
+            provider=provider,
+            model=model,
+            trace_id=trace_id,
+            biz_type=biz_type,
+            input_count=len(texts),
+            input_chars=input_chars,
+            prompt_tokens=prompt_tokens,
+            total_tokens=prompt_tokens,
+            latency_ms=elapsed_ms(started),
+            status=status,
+            error_message=error_message,
+        )
+
+    if remote:
         try:
-            return _remote_dense(texts), embedding_provider()
+            vectors, prompt_tokens = _remote_dense(texts)
         except Exception as exc:  # noqa: BLE001  统一转成任务失败信息
+            record(status=AiRunStatus.failed, error_message=str(exc))
             raise RuntimeError(f"向量模型调用失败：{exc}") from exc
-    return [_local_dense(text) for text in texts], "local-hash"
+        record(status=AiRunStatus.success, prompt_tokens=prompt_tokens)
+        return vectors, embedding_provider()
+
+    vectors = [_local_dense(text) for text in texts]
+    record(status=AiRunStatus.success)
+    return vectors, "local-hash"

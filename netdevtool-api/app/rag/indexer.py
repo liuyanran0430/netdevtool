@@ -176,7 +176,9 @@ def index_document(
 
             dense_vectors: list[list[float]] = []
             if use_dense:
-                dense_vectors, provider = encode_dense(texts)
+                dense_vectors, provider = encode_dense(
+                    texts, biz_type="knowledge_document", trace_id=str(doc_id)
+                )
                 dense_dim = len(dense_vectors[0])
                 on_progress(
                     "embedding",

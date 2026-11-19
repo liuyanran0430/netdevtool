@@ -9,6 +9,9 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import (
+    ChatMessageRole,
+    ChatMessageStatus,
+    ChatQuestionMode,
     DeviceType,
     KnowledgeBaseChunkingMode,
     KnowledgeBaseIndexingMode,
@@ -289,7 +292,6 @@ class ReviewCandidateOut(APIModel):
     views: list[str] = Field(default_factory=list)
     reasoning: str | None = None
     passed: bool = False
-    llm_model: str
     created_at: datetime
 
 
@@ -470,8 +472,6 @@ class SupplementCandidateOut(BaseModel):
     id: int
     gap_id: int
     status: SupplementCandidateStatus
-    llm_model: str
-    prompt_version: str
     response: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
     rag: dict[str, Any] | None = None
@@ -494,3 +494,54 @@ class SupplementFileOut(BaseModel):
     accepted_at: str | None = None
     verified: bool = False
     uses: int = 0
+
+
+class ChatMessageOut(APIModel):
+    """会话消息出参。"""
+
+    id: int
+    role: ChatMessageRole
+    content: str
+    status: ChatMessageStatus
+    mode: ChatQuestionMode
+    created_at: datetime
+
+
+class ChatSessionOut(APIModel):
+    """会话列表出参。"""
+
+    id: int
+    title: str
+    vendor: str | None = None
+    message_count: int
+    last_message_at: datetime | None = None
+    created_at: datetime
+
+
+class ChatSessionDetailOut(ChatSessionOut):
+    """会话详情出参：包含按时间排列的全部消息。"""
+
+    messages: list[ChatMessageOut] = Field(default_factory=list)
+
+
+class ChatMessageCreate(BaseModel):
+    """发送消息入参；`session_id` 为空时自动创建新会话。"""
+
+    session_id: int | None = Field(default=None, ge=1)
+    content: str = Field(min_length=1, max_length=8000)
+    mode: ChatQuestionMode = ChatQuestionMode.unknown
+    vendor: str | None = Field(default=None, max_length=64)
+
+
+class ChatSendResult(BaseModel):
+    """发送结果：会话信息 + 本次落库的两条消息。"""
+
+    session: ChatSessionOut
+    user_message: ChatMessageOut
+    assistant_message: ChatMessageOut
+
+
+class ChatSessionRename(BaseModel):
+    """重命名会话入参。"""
+
+    title: str = Field(min_length=1, max_length=128)

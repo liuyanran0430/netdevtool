@@ -336,7 +336,6 @@ def candidate_out(candidate: SupplementCandidate) -> ReviewCandidateOut:
         views=[view for view in views if isinstance(view, str)] if isinstance(views, list) else [],
         reasoning=response.get("reasoning"),
         passed=bool(validation.get("passed")),
-        llm_model=candidate.llm_model,
         created_at=candidate.created_at,
     )
 

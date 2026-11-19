@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api import auth, devices, health, knowledge, review, translations
+from app.api import auth, chat, devices, health, knowledge, review, translations
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -11,3 +11,4 @@ api_router.include_router(devices.router)
 api_router.include_router(translations.router)
 api_router.include_router(knowledge.router)
 api_router.include_router(review.router)
+api_router.include_router(chat.router)
