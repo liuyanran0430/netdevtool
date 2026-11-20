@@ -34,6 +34,7 @@ __all__ = [
     "Base",
     "ChatMessage",
     "ChatMessageCitation",
+    "ChatMessageFeedback",
     "ChatMessageRole",
     "ChatMessageStatus",
     "ChatQuestionMode",
@@ -809,6 +810,7 @@ class ChatMessageStatus(str, Enum):
 
     streaming = "streaming"
     completed = "completed"
+    clarifying = "clarifying"
     failed = "failed"
 
 
@@ -819,6 +821,7 @@ class ChatQuestionMode(str, Enum):
     troubleshoot = "troubleshoot"
     knowledge = "knowledge"
     unknown = "unknown"
+    out_of_scope = "out_of_scope"
 
 
 class ChatSession(Base):
@@ -852,6 +855,11 @@ class ChatSession(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, comment="软删除时间，空表示未删除"
+    )
+    pending_clarify: Mapped[dict[str, object] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="待补充信息：{slots, mode, origin_question, round}，补齐后清空",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -975,4 +983,42 @@ class ChatMessageCitation(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ChatMessageFeedback(Base):
+    """回答点赞/点踩表：每个用户对同一条回答仅保留一条反馈。"""
+
+    __tablename__ = "chat_message_feedbacks"
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "user_id", name="uq_chat_feedback_message_user"
+        ),
+        Index("ix_chat_feedback_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("chat_messages.id"),
+        nullable=False,
+        comment="归属消息 chat_messages.id",
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, comment="归属 users.id"
+    )
+    rating: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, comment="1=赞, -1=踩"
+    )
+    reason: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="点踩原因"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

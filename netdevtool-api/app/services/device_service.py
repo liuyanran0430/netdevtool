@@ -26,6 +26,21 @@ def list_devices(
     return DeviceRepository(db).list_devices(vendor=vendor, device_type=device_type)
 
 
+def normalize_vendor(db: Session, vendor: str | None) -> str | None:
+    """把厂商名归一为设备档案中的英文 key，供知识库 payload 比对。
+
+    接受中文名（华为/中兴）或已是英文 key（huawei/zte）；`all`、空值原样返回。
+    """
+    value = (vendor or "").strip()
+    if not value or value.lower() == "all":
+        return value or None
+
+    device = DeviceRepository(db).find_by_vendor(value)
+    if device is None:
+        return value.lower()
+    return (device.vendor_en or device.vendor).strip().lower()
+
+
 def resolve_manual(db: Session, *, vendor: str, model: str) -> tuple[str, str | Path]:
     """解析设备手册：返回 ("external", 链接) 或 ("local", 知识库下的文件路径)。"""
     device = DeviceRepository(db).find_by_vendor_and_model(vendor, model)

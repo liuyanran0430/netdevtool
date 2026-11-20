@@ -11,6 +11,10 @@ from app.rag.schema import Chunk, ChunkingConfig, NeedManualError
 
 _ESCAPES = {"\\n": "\n", "\\r": "\r", "\\t": "\t"}
 
+# 一级/二级标题与分隔线作为父块的硬边界，避免父块跨小节
+_SECTION_SPLIT = re.compile(r"(?m)^(?=#{1,2}\s|-{3,}\s*$)")
+_RULE_LINE = re.compile(r"(?m)^(?:-{3,}|\*{3,}|_{3,})\s*$")
+
 _QA_QUESTION = re.compile(r"^\s*(?:Q|问|问题)\s*[:：]\s*", re.IGNORECASE)
 _QA_ANSWER = re.compile(r"^\s*(?:A|答|答案)\s*[:：]\s*", re.IGNORECASE)
 
@@ -85,6 +89,18 @@ def _general_chunks(text: str, config: ChunkingConfig) -> list[Chunk]:
     return chunks
 
 
+def _split_sections(text: str) -> list[str]:
+    """按一级/二级标题和分隔线预切小节，保证父块不会跨越标题。"""
+    sections: list[str] = []
+    for section in _SECTION_SPLIT.split(text):
+        cleaned = section.strip()
+        # 丢弃只剩分隔线的空片段
+        if not cleaned or not _RULE_LINE.sub("", cleaned).strip():
+            continue
+        sections.append(cleaned)
+    return sections
+
+
 def _parent_child_chunks(text: str, config: ChunkingConfig) -> list[Chunk]:
     parent_delimiter = normalize_delimiter(config.parent_delimiter, "\n\n")
     child_delimiter = normalize_delimiter(config.child_delimiter, "\n")
@@ -92,20 +108,21 @@ def _parent_child_chunks(text: str, config: ChunkingConfig) -> list[Chunk]:
     child_max = max(config.child_max_length, 20)
 
     chunks: list[Chunk] = []
-    for parent_index, parent in enumerate(
-        _split_by(text, parent_delimiter, parent_max)
-    ):
-        children = _split_by(parent, child_delimiter, child_max)
-        for child in children:
-            chunks.append(
-                Chunk(
-                    text=child,
-                    kind="child",
-                    index=len(chunks),
-                    parent_index=parent_index,
-                    parent_text=parent,
+    parent_index = 0
+    for section in _split_sections(text):
+        for parent in _split_by(section, parent_delimiter, parent_max):
+            children = _split_by(parent, child_delimiter, child_max)
+            for child in children:
+                chunks.append(
+                    Chunk(
+                        text=child,
+                        kind="child",
+                        index=len(chunks),
+                        parent_index=parent_index,
+                        parent_text=parent,
+                    )
                 )
-            )
+            parent_index += 1
     return chunks
 
 

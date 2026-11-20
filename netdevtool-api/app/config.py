@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = ""
     LLM_MODEL: str = ""
 
+    # 智能问答：留空时沿用 LLM_MODEL
+    CHAT_QA_MODEL: str = ""
+    CHAT_INTENT_MODEL: str = ""
+
     # 跨域（逗号分隔）
     CORS_ORIGINS: str = "http://localhost:5175,http://127.0.0.1:5175"
 

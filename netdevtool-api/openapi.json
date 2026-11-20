@@ -2426,6 +2426,22 @@
         "operationId": "send_chat_message_api_v1_chat_messages_post",
         "parameters": [
           {
+            "name": "X-Chat-Request-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Chat-Request-Id"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -2459,6 +2475,132 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ChatSendResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/messages/{message_id}/feedback": {
+      "put": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "对回答点赞/点踩（rating=0 取消，点踩需给出原因）",
+        "operationId": "set_chat_message_feedback_api_v1_chat_messages__message_id__feedback_put",
+        "parameters": [
+          {
+            "name": "message_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Message Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFeedbackIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFeedbackOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat/progress/{request_id}": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "查询问答处理阶段（前端轮询用）",
+        "operationId": "get_chat_progress_api_v1_chat_progress__request_id__get",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatProgressOut"
                 }
               }
             }
@@ -2518,6 +2660,143 @@
         ],
         "title": "CandidateGenerateRequest",
         "description": "生成候选入参：需明确目标设备，用于确定目标厂商命令与视图。"
+      },
+      "ChatCitationOut": {
+        "properties": {
+          "doc_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doc Id"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          }
+        },
+        "type": "object",
+        "title": "ChatCitationOut",
+        "description": "回答引用来源，用于前端展示「参考来源」并支持查看命中片段。"
+      },
+      "ChatClarifyOut": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "allow_free_text": {
+            "type": "boolean",
+            "title": "Allow Free Text",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "ChatClarifyOut",
+        "description": "追问信息：问题、可选项与是否允许自由输入。"
+      },
+      "ChatFeedbackIn": {
+        "properties": {
+          "rating": {
+            "type": "integer",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Rating",
+            "description": "1=赞, -1=踩, 0=取消"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "点踩原因"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rating"
+        ],
+        "title": "ChatFeedbackIn",
+        "description": "回答反馈入参：rating=-1 时必须给出原因，0 表示取消反馈。"
+      },
+      "ChatFeedbackOut": {
+        "properties": {
+          "message_id": {
+            "type": "integer",
+            "title": "Message Id"
+          },
+          "rating": {
+            "type": "integer",
+            "title": "Rating"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_id",
+          "rating"
+        ],
+        "title": "ChatFeedbackOut",
+        "description": "回答反馈出参：rating=0 表示已取消。"
       },
       "ChatMessageCreate": {
         "properties": {
@@ -2582,6 +2861,32 @@
           "mode": {
             "$ref": "#/components/schemas/ChatQuestionMode"
           },
+          "evidenced": {
+            "type": "boolean",
+            "title": "Evidenced",
+            "description": "是否基于知识库检索证据生成（引用数 > 0）",
+            "default": false
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ChatCitationOut"
+            },
+            "type": "array",
+            "title": "Citations",
+            "description": "回答引用的知识库来源，无引用时为空"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback",
+            "description": "当前用户对该回答的反馈：1=赞, -1=踩, 空=未反馈"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2614,10 +2919,29 @@
         "enum": [
           "streaming",
           "completed",
+          "clarifying",
           "failed"
         ],
         "title": "ChatMessageStatus",
         "description": "消息生成状态。"
+      },
+      "ChatProgressOut": {
+        "properties": {
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          }
+        },
+        "type": "object",
+        "title": "ChatProgressOut",
+        "description": "问答处理阶段：intent / retrieval / generation；None 表示已结束或未知。"
       },
       "ChatQuestionMode": {
         "type": "string",
@@ -2625,7 +2949,8 @@
           "command",
           "troubleshoot",
           "knowledge",
-          "unknown"
+          "unknown",
+          "out_of_scope"
         ],
         "title": "ChatQuestionMode",
         "description": "问答模式，与前端输入框的模式选项一致。"
@@ -2640,16 +2965,34 @@
           },
           "assistant_message": {
             "$ref": "#/components/schemas/ChatMessageOut"
+          },
+          "intent": {
+            "$ref": "#/components/schemas/ChatQuestionMode"
+          },
+          "mode_selected": {
+            "$ref": "#/components/schemas/ChatQuestionMode"
+          },
+          "clarify": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatClarifyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
         "required": [
           "session",
           "user_message",
-          "assistant_message"
+          "assistant_message",
+          "intent",
+          "mode_selected"
         ],
         "title": "ChatSendResult",
-        "description": "发送结果：会话信息 + 本次落库的两条消息。"
+        "description": "发送结果：会话信息 + 本次落库的两条消息 + 意图与追问信息。"
       },
       "ChatSessionDetailOut": {
         "properties": {

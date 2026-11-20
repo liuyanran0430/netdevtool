@@ -1,33 +1,48 @@
 import {
+  AimOutlined,
   ArrowUpOutlined,
   BookOutlined,
+  BulbOutlined,
   CloseOutlined,
   CodeOutlined,
   CommentOutlined,
+  CopyOutlined,
+  DislikeFilled,
+  DislikeOutlined,
   EllipsisOutlined,
+  ExclamationCircleOutlined,
+  FileTextOutlined,
   InfoCircleOutlined,
+  LikeFilled,
+  LikeOutlined,
   PlusOutlined,
   SafetyCertificateOutlined,
   ScanOutlined,
   SearchOutlined,
+  ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { Dropdown, Input, Modal, Select } from 'antd'
-import { useEffect, useRef, useState } from 'react'
+import { Dropdown, Input, message, Modal, Popover, Select } from 'antd'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import {
   deleteChatSession,
+  fetchChatProgress,
   fetchChatSession,
   fetchChatSessions,
   renameChatSession,
   sendChatMessage,
+  setChatMessageFeedback,
+  type ChatCitationDto,
+  type ChatClarifyDto,
   type ChatMessageDto,
   type ChatQuestionMode,
   type ChatSessionDto,
 } from '../api/chat'
 import { fetchDevices } from '../api/devices'
 import { fetchKnowledgeStatus } from '../api/knowledge'
+import { readSession } from '../auth/session'
 
 const VENDOR_LS_KEY = 'chat:vendor'
 const SESSION_LS_KEY = 'chat:session'
@@ -56,6 +71,14 @@ const QUESTION_MODES = [
 ]
 
 type KnowledgeStatus = 'checking' | 'connected' | 'empty' | 'disconnected'
+
+/** 意图类型的中文名，用于「已按 XX 处理」提示 */
+const MODE_LABELS: Record<string, string> = {
+  command: '配置查询',
+  troubleshoot: '故障排查',
+  knowledge: '知识提问',
+  out_of_scope: '范围外',
+}
 
 const KNOWLEDGE_STATUS_META: Record<
   KnowledgeStatus,
@@ -499,12 +522,444 @@ function RobotAvatar({ size = 88 }: { size?: number }) {
 
 interface ChatMessageView {
   id: string
+  /** 数据库消息 id，临时消息为空，用于反馈接口 */
+  dbId?: number
   role: 'user' | 'assistant'
   content: string
+  clarifying?: boolean
+  mode?: ChatQuestionMode
+  evidenced?: boolean
+  citations?: ChatCitationDto[]
+  feedback?: 1 | -1 | null
+  pending?: boolean
+  requestId?: string
 }
 
 function toChatView(message: ChatMessageDto): ChatMessageView {
-  return { id: `db-${message.id}`, role: message.role, content: message.content }
+  return {
+    id: `db-${message.id}`,
+    dbId: message.id,
+    role: message.role,
+    content: message.content,
+    clarifying: message.status === 'clarifying',
+    mode: message.mode,
+    evidenced: message.evidenced,
+    citations: message.citations,
+    feedback: message.feedback ?? null,
+  }
+}
+
+interface TroubleshootData {
+  hypotheses: Array<{ cause: string; confidence: number; evidence_refs?: string[] }>
+  steps: Array<{ action: string; command?: string | null; pass_criteria?: string | null }>
+  solutions: Array<{ action: string; risk?: string | null }>
+  summary: string
+}
+
+function tryParseTroubleshoot(content: string): TroubleshootData | null {
+  try {
+    const parsed = JSON.parse(content)
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray(parsed.hypotheses) &&
+      typeof parsed.summary === 'string'
+    ) {
+      return parsed as TroubleshootData
+    }
+  } catch {
+    // 不是合法 JSON 或结构不符，走纯文本渲染
+  }
+  return null
+}
+
+function Section({
+  icon,
+  title,
+  count,
+  children,
+}: {
+  icon: ReactNode
+  title: string
+  count: number
+  children: ReactNode
+}) {
+  return (
+    <div>
+      <div className="mb-2.5 flex items-center gap-1.5">
+        <span className="inline-flex text-[12px] text-brand-strong">{icon}</span>
+        <span className="text-[12px] font-bold text-ink-700">{title}</span>
+        <span className="rounded-full bg-soft px-1.5 py-[1px] text-[10px] font-medium text-ink-400">
+          {count}
+        </span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function TroubleshootCard({ data }: { data: TroubleshootData }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-white">
+      {/* 标题栏 */}
+      <div className="flex items-center gap-2 border-b border-line bg-brand-soft/40 px-4 py-2.5">
+        <ScanOutlined className="text-[14px] text-brand-strong" />
+        <span className="text-[14px] font-bold text-brand-strong">故障排查表</span>
+      </div>
+
+      <div className="space-y-5 p-4">
+        {/* 可能原因 */}
+        {data.hypotheses.length > 0 ? (
+          <Section icon={<BulbOutlined />} title="可能原因" count={data.hypotheses.length}>
+            <ol className="divide-y divide-line/70 overflow-hidden rounded-lg border border-line/70 bg-soft/40">
+              {data.hypotheses.map((item, idx) => (
+                <li key={idx} className="flex items-start gap-2.5 px-3 py-2">
+                  <span className="mt-[2px] inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-md bg-brand-strong/10 px-1 text-[11px] font-bold text-brand-strong">
+                    {idx + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] leading-[1.65] text-ink-900">{item.cause}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </Section>
+        ) : null}
+
+        {/* 诊断步骤 */}
+        {data.steps.length > 0 ? (
+          <Section icon={<ToolOutlined />} title="诊断步骤" count={data.steps.length}>
+            <ol className="space-y-2">
+              {data.steps.map((item, idx) => (
+                <li key={idx} className="rounded-lg border border-line/70 px-3 py-2">
+                  <div className="flex items-start gap-2.5">
+                    <span className="mt-[2px] inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-soft px-1 text-[11px] font-bold text-ink-500">
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-[13px] leading-[1.65] text-ink-900">
+                        {item.action}
+                      </p>
+                      {item.command || item.pass_criteria ? (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          {item.command ? (
+                            <code className="rounded-md bg-[#f5f6f8] px-2 py-0.5 font-mono text-[11px] text-brand-strong">
+                              {item.command}
+                            </code>
+                          ) : null}
+                          {item.pass_criteria ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-success">
+                              <AimOutlined className="text-[10px]" />
+                              通过标准：{item.pass_criteria}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </Section>
+        ) : null}
+
+        {/* 解决方案 */}
+        {data.solutions.length > 0 ? (
+          <Section icon={<SafetyCertificateOutlined />} title="解决方案" count={data.solutions.length}>
+            <ul className="divide-y divide-success/15 overflow-hidden rounded-lg border border-success/15 bg-success/5">
+              {data.solutions.map((item, idx) => (
+                <li key={idx} className="flex items-start gap-2.5 px-3 py-2">
+                  <SafetyCertificateOutlined className="mt-[3px] shrink-0 text-[12px] text-success" />
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-[13px] leading-[1.65] text-ink-900">
+                      {item.action}
+                      {item.risk ? (
+                        <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-warn">
+                          <ExclamationCircleOutlined className="text-[10px]" />
+                          风险：{item.risk}
+                        </span>
+                      ) : null}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        ) : null}
+      </div>
+
+      {/* 执行提示 */}
+      <div className="flex items-start gap-1.5 border-t border-line bg-soft px-4 py-2.5 text-[11px] leading-[1.6] text-ink-400">
+        <InfoCircleOutlined className="mt-0.5 shrink-0 text-[11px]" />
+        <span>建议先执行只读诊断命令；修改配置前，请备份并确认业务影响。</span>
+      </div>
+    </div>
+  )
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  intent: '正在识别问题意图…',
+  retrieval: '正在检索知识库…',
+  generation: '正在生成回答…',
+}
+
+function PendingReply({ requestId }: { requestId?: string }) {
+  const [elapsed, setElapsed] = useState(0)
+  const [stage, setStage] = useState<string | null>(null)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  // 轮询后端记录的真实处理阶段，避免用固定时长猜测
+  useEffect(() => {
+    if (!requestId) return
+    let cancelled = false
+    const tick = () => {
+      fetchChatProgress(requestId)
+        .then((value) => {
+          if (!cancelled && value) setStage(value)
+        })
+        .catch(() => undefined)
+    }
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [requestId])
+
+  const label = (stage && STAGE_LABELS[stage]) ?? '正在处理…'
+
+  return (
+    <div className="rounded-lg border border-brand-line bg-brand-soft/40 px-3 py-2.5">
+      <div className="flex items-center gap-2 text-[13px] text-ink-700">
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-strong" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-strong [animation-delay:150ms]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-strong [animation-delay:300ms]" />
+        </span>
+        <span>{label}</span>
+        <span className="text-[11px] text-ink-400">已等待 {elapsed} 秒</span>
+      </div>
+      {elapsed >= 30 ? (
+        <p className="mt-1.5 text-[11px] text-ink-400">
+          仍在生成，请耐心等待，不要重复提交。
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function citationLabel(fileName?: string, snippet?: string): string {
+  const base = (fileName ?? '文档').replace(/\.[^.]+$/, '')
+  const heading = snippet
+    ?.split('\n')
+    .map((line) => line.trim())
+    .find((line) => /^#{1,6}\s+\S/.test(line))
+  if (!heading) return base
+  const title = heading.replace(/^#{1,6}\s+/, '').trim()
+  return `${base}·${title}`
+}
+
+/** 复制时使用的纯文本：故障排查的结构化 JSON 转成可读文本 */
+function answerPlainText(message: ChatMessageView): string {
+  if (message.mode !== 'troubleshoot') return message.content
+  const data = tryParseTroubleshoot(message.content)
+  if (!data) return message.content
+  const lines: string[] = [data.summary]
+  if (data.hypotheses.length > 0) {
+    lines.push('', '可能原因：')
+    data.hypotheses.forEach((item, index) => {
+      lines.push(`${index + 1}. ${item.cause}`)
+    })
+  }
+  if (data.steps.length > 0) {
+    lines.push('', '诊断步骤：')
+    data.steps.forEach((item, index) => {
+      const extra = [
+        item.command ? `命令：${item.command}` : '',
+        item.pass_criteria ? `通过标准：${item.pass_criteria}` : '',
+      ]
+        .filter(Boolean)
+        .join('；')
+      lines.push(`${index + 1}. ${item.action}${extra ? `（${extra}）` : ''}`)
+    })
+  }
+  if (data.solutions.length > 0) {
+    lines.push('', '解决方案：')
+    data.solutions.forEach((item, index) => {
+      lines.push(
+        `${index + 1}. ${item.action}${item.risk ? `（风险：${item.risk}）` : ''}`,
+      )
+    })
+  }
+  return lines.join('\n')
+}
+
+/** 点踩原因预设，选择后可继续补充说明 */
+const DISLIKE_REASONS = ['答非所问', '内容不准确', '步骤无法执行', '内容不完整']
+
+function MessageActions({
+  messageId,
+  text,
+  initialFeedback,
+}: {
+  messageId?: number
+  text: string
+  initialFeedback?: 1 | -1 | null
+}) {
+  const [copied, setCopied] = useState(false)
+  const [feedback, setFeedback] = useState<1 | -1 | null>(initialFeedback ?? null)
+  const [reasonOpen, setReasonOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(
+      () => setCopied(true),
+      () => undefined,
+    )
+  }
+
+  const submit = (rating: 1 | -1 | 0, reasonText?: string) => {
+    if (!messageId || submitting) return
+    const previous = feedback
+    setFeedback(rating === 0 ? null : rating)
+    setSubmitting(true)
+    setChatMessageFeedback(messageId, rating, reasonText)
+      .catch((error: unknown) => {
+        setFeedback(previous)
+        message.error(error instanceof Error ? error.message : '提交反馈失败')
+      })
+      .finally(() => setSubmitting(false))
+  }
+
+  const confirmDislike = () => {
+    const value = reason.trim()
+    if (!value) {
+      message.warning('请填写点踩原因')
+      return
+    }
+    setReasonOpen(false)
+    submit(-1, value)
+  }
+
+  const buttonClass =
+    'inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-ink-400 transition-colors hover:bg-soft hover:text-ink-700 disabled:cursor-not-allowed disabled:opacity-50'
+
+  return (
+    <div className="mt-2.5 flex items-center gap-1 text-[12px]">
+      <button type="button" onClick={copy} className={buttonClass}>
+        <CopyOutlined className="text-[13px]" />
+        {copied ? '已复制' : '复制'}
+      </button>
+      <span className="mx-1 h-3.5 w-px bg-line" />
+      <button
+        type="button"
+        aria-label="有帮助"
+        aria-pressed={feedback === 1}
+        disabled={!messageId || submitting}
+        onClick={() => submit(feedback === 1 ? 0 : 1)}
+        className={`${buttonClass} ${feedback === 1 ? 'bg-brand-soft text-brand-strong' : ''}`}
+      >
+        {feedback === 1 ? (
+          <LikeFilled className="text-[14px]" />
+        ) : (
+          <LikeOutlined className="text-[14px]" />
+        )}
+      </button>
+      <Popover
+        open={reasonOpen}
+        onOpenChange={(open) => {
+          if (open && feedback === -1) return
+          setReason('')
+          setReasonOpen(open)
+        }}
+        trigger="click"
+        placement="top"
+        content={
+          <div className="w-[280px]">
+            <span className="block text-[12px] font-bold text-ink-700">
+              请选择点踩原因
+            </span>
+            <p className="mt-0.5 text-[11px] text-ink-400">
+              可点选预设原因，也可以自行填写
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {DISLIKE_REASONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => setReason(option)}
+                  className={`rounded-md border px-2 py-1 text-[11px] transition-colors ${
+                    reason === option
+                      ? 'border-brand-line bg-brand-soft text-brand-strong'
+                      : 'border-line text-ink-500 hover:border-brand-line hover:text-brand-strong'
+                  }`}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            <Input.TextArea
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="补充说明（必填，最多 100 字）"
+              autoSize={{ minRows: 2, maxRows: 3 }}
+              maxLength={100}
+              className="mt-2 text-[12px]"
+            />
+            <div className="mt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setReasonOpen(false)}
+                className="h-7 rounded-md border border-line px-2.5 text-[12px] text-ink-500 transition-colors hover:text-ink-700"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={confirmDislike}
+                disabled={submitting}
+                className="h-7 rounded-md bg-brand px-2.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                提交
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <button
+          type="button"
+          aria-label="没有帮助"
+          aria-pressed={feedback === -1}
+          disabled={!messageId || submitting}
+          onClick={() => {
+            if (feedback === -1) {
+              setReasonOpen(false)
+              submit(0)
+            }
+          }}
+          className={`${buttonClass} ${feedback === -1 ? 'bg-brand-soft text-brand-strong' : ''}`}
+        >
+          {feedback === -1 ? (
+            <DislikeFilled className="text-[14px]" />
+          ) : (
+            <DislikeOutlined className="text-[14px]" />
+          )}
+        </button>
+      </Popover>
+    </div>
+  )
 }
 
 function ChatMessages({
@@ -541,12 +996,103 @@ function ChatMessages({
               <RobotAvatar size={30} />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="mb-1 text-[13px] font-bold text-ink-900">
-                网络知识助手
+              <div className="mb-1 flex items-center gap-2">
+                <span className="text-[13px] font-bold text-ink-900">网络知识助手</span>
+                {message.evidenced ? (
+                  <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+                    知识库增强
+                  </span>
+                ) : null}
               </div>
-              <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
-                {message.content}
-              </p>
+              {message.pending ? (
+                <PendingReply requestId={message.requestId} />
+              ) : message.clarifying ? (
+                <div className="rounded-lg border border-brand-line bg-brand-soft/60 px-3 py-2">
+                  <span className="mb-1 flex items-center gap-1 text-[11px] font-bold text-brand-strong">
+                    <InfoCircleOutlined />
+                    需要补充信息
+                  </span>
+                  <p className="whitespace-pre-wrap text-[13px] leading-[1.7] text-ink-900">
+                    {message.content}
+                  </p>
+                </div>
+              ) : message.mode === 'troubleshoot' ? (
+                (() => {
+                  const data = tryParseTroubleshoot(message.content)
+                  if (data)
+                    return (
+                      <div className="space-y-2">
+                        <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
+                          {data.summary}
+                        </p>
+                        <TroubleshootCard data={data} />
+                      </div>
+                    )
+                  // 兜底：不是合法 JSON，按纯文本渲染
+                  return (
+                    <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
+                      {message.content}
+                    </p>
+                  )
+                })()
+              ) : (
+                <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
+                  {message.content}
+                </p>
+              )}
+
+              {message.citations && message.citations.length > 0 ? (
+                <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] text-ink-400">参考来源</span>
+                  {message.citations.map((citation, index) => (
+                    <span
+                      key={`${citation.doc_id ?? 'doc'}-${index}`}
+                      className="inline-flex max-w-[280px] items-center gap-1 rounded-md border border-line bg-white px-2 py-1 text-[11px] text-ink-500"
+                    >
+                      <FileTextOutlined className="shrink-0 text-[11px]" />
+                      <span className="truncate">
+                        {citationLabel(citation.file_name, citation.snippet)}
+                      </span>
+                      <Popover
+                        trigger="click"
+                        placement="top"
+                        content={
+                          <div className="-m-3 w-[420px] max-w-[80vw] overflow-hidden rounded-lg bg-white">
+                            <div className="flex items-center gap-2 border-b border-line bg-brand-soft/50 px-3 py-2">
+                              <FileTextOutlined className="shrink-0 text-[12px] text-brand-strong" />
+                              <span className="min-w-0 flex-1 truncate text-[12px] font-bold text-ink-900">
+                                {citation.file_name ?? `文档 #${citation.doc_id ?? '-'}`}
+                              </span>
+                              <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] text-ink-400">
+                                相关度 {Math.round((citation.score ?? 0) * 100)}%
+                              </span>
+                            </div>
+                            <div className="thin-scrollbar max-h-[300px] overflow-y-auto whitespace-pre-wrap px-3 py-2.5 text-[12px] leading-[1.75] text-ink-700">
+                              {citation.snippet ?? '暂无片段内容'}
+                            </div>
+                          </div>
+                        }
+                      >
+                        <button
+                          type="button"
+                          aria-label="查看引用片段"
+                          className="shrink-0 rounded p-0.5 text-ink-400 transition-colors hover:bg-brand-soft hover:text-brand-strong"
+                        >
+                          <ArrowUpOutlined rotate={45} className="text-[11px]" />
+                        </button>
+                      </Popover>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              {message.pending || message.clarifying ? null : (
+                <MessageActions
+                  messageId={message.dbId}
+                  initialFeedback={message.feedback}
+                  text={answerPlainText(message)}
+                />
+              )}
             </div>
           </div>
         ),
@@ -758,7 +1304,17 @@ export function ChatPage() {
   )
   const [sending, setSending] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
+  const [intentNotice, setIntentNotice] = useState<string | null>(null)
+  const [clarify, setClarify] = useState<ChatClarifyDto | null>(null)
+  const [lastMode, setLastMode] = useState<ChatQuestionMode>('unknown')
   const messageListRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const node = messageListRef.current
+    if (node) {
+      node.scrollTop = node.scrollHeight
+    }
+  }, [messages, sending])
 
   useEffect(() => {
     let cancelled = false
@@ -775,7 +1331,8 @@ export function ChatPage() {
             }
           })
           .catch(() => {
-            if (!cancelled) setChatError('会话列表加载失败')
+            // 401 时 client 已清理登录态并跳转登录页，这里不再提示加载失败
+            if (!cancelled && readSession()) setChatError('会话列表加载失败')
           })
           .finally(() => {
             if (!cancelled) setSessionsLoading(false)
@@ -822,18 +1379,41 @@ export function ChatPage() {
 
   const handleSend = async (content: string, mode: ChatQuestionMode) => {
     if (sending) return
+    const optimisticUserMessage: ChatMessageView = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content,
+    }
+    const pendingId = `pending-${Date.now()}`
+    const requestId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setMessages((current) => [
+      ...current,
+      optimisticUserMessage,
+      { id: pendingId, role: 'assistant', content: '', pending: true, requestId },
+    ])
     setSending(true)
     setChatError(null)
+    setClarify(null)
+    setIntentNotice(null)
+    setLastMode(mode)
     try {
-      const result = await sendChatMessage({
-        session_id: activeSessionId,
-        content,
-        mode,
-        vendor: vendor || null,
-      })
+      const result = await sendChatMessage(
+        {
+          session_id: activeSessionId,
+          content,
+          mode,
+          vendor: vendor || null,
+        },
+        requestId,
+      )
       setActiveSessionId(result.session.id)
       setMessages((current) => [
-        ...current,
+        ...current.filter(
+          (item) => item.id !== optimisticUserMessage.id && item.id !== pendingId,
+        ),
         toChatView(result.user_message),
         toChatView(result.assistant_message),
       ])
@@ -841,7 +1421,17 @@ export function ChatPage() {
         result.session,
         ...current.filter((item) => item.id !== result.session.id),
       ])
+      setClarify(result.clarify)
+      if (
+        result.intent !== result.mode_selected &&
+        result.mode_selected !== 'unknown' &&
+        result.intent !== 'out_of_scope'
+      ) {
+        setIntentNotice(`已按「${MODE_LABELS[result.intent] ?? result.intent}」处理`)
+      }
     } catch (error) {
+      // 保留用户提问，仅移除等待占位，避免用户以为消息丢失
+      setMessages((current) => current.filter((item) => item.id !== pendingId))
       setChatError(error instanceof Error ? error.message : '发送失败')
     } finally {
       setSending(false)
@@ -851,6 +1441,8 @@ export function ChatPage() {
   const handleSelectSession = (sessionId: number) => {
     if (sending || sessionId === activeSessionId) return
     setChatError(null)
+    setClarify(null)
+    setIntentNotice(null)
     setActiveSessionId(sessionId)
   }
 
@@ -858,6 +1450,8 @@ export function ChatPage() {
     setActiveSessionId(null)
     setMessages([])
     setChatError(null)
+    setClarify(null)
+    setIntentNotice(null)
     // 新对话默认不限定厂商
     setVendor(ANY_VENDOR)
   }
@@ -1014,6 +1608,31 @@ export function ChatPage() {
           {chatError ? (
             <div className="px-6 pb-2 text-[11px] text-danger lg:px-12">
               {chatError}
+            </div>
+          ) : null}
+
+          {intentNotice ? (
+            <div className="px-6 pb-2 text-[11px] text-ink-400 lg:px-12">
+              {intentNotice}
+            </div>
+          ) : null}
+
+          {clarify && clarify.options.length > 0 ? (
+            <div className="px-6 pb-2 lg:px-12">
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-brand-line bg-brand-soft/50 px-3 py-2">
+                <span className="text-[12px] text-ink-500">快速选择：</span>
+                {clarify.options.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    disabled={sending}
+                    onClick={() => void handleSend(option, lastMode)}
+                    className="rounded-full border border-brand-line bg-white px-3 py-1 text-[12px] text-brand-strong transition-colors hover:border-brand disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : null}
 

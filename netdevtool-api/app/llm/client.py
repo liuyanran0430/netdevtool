@@ -66,11 +66,16 @@ def _to_messages(messages: list[dict[str, str]]) -> list[BaseMessage]:
 
 
 def _build_model(
-    *, temperature: float, timeout: float, max_tokens: int, json_mode: bool
+    *,
+    temperature: float,
+    timeout: float,
+    max_tokens: int,
+    json_mode: bool,
+    model_name: str | None = None,
 ) -> ChatOpenAI:
     """每次调用重建模型实例，保证配置变更后立即生效。"""
     options: dict[str, Any] = {
-        "model_name": settings.LLM_MODEL,
+        "model_name": model_name or settings.LLM_MODEL,
         "openai_api_key": settings.LLM_API_KEY,
         "openai_api_base": settings.LLM_BASE_URL,
         "temperature": temperature,
@@ -132,12 +137,14 @@ def _invoke(
     max_tokens: int,
     json_mode: bool,
     usage_sink: Callable[[LLMUsage], None] | None,
+    model_name: str | None = None,
 ) -> AIMessage:
     model = _build_model(
         temperature=temperature,
         timeout=timeout,
         max_tokens=max_tokens,
         json_mode=json_mode,
+        model_name=model_name,
     )
     try:
         response = model.invoke(messages)
@@ -157,6 +164,7 @@ def chat_json(
     timeout: float = 180.0,
     max_tokens: int = 4096,
     usage_sink: Callable[[LLMUsage], None] | None = None,
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     """调用对话模型并解析为 JSON 对象。
 
@@ -177,6 +185,7 @@ def chat_json(
             max_tokens=max_tokens,
             json_mode=True,
             usage_sink=usage_sink,
+            model_name=model_name,
         )
     except LLMError as exc:
         if not _is_bad_request(exc):
@@ -189,6 +198,7 @@ def chat_json(
             max_tokens=max_tokens,
             json_mode=False,
             usage_sink=usage_sink,
+            model_name=model_name,
         )
 
     content = _content(response)
@@ -200,6 +210,7 @@ def chat_json(
             max_tokens=min(max_tokens * 2, 8192),
             json_mode=json_mode,
             usage_sink=usage_sink,
+            model_name=model_name,
         )
         content = _content(response)
 
@@ -210,3 +221,43 @@ def chat_json(
         return json.loads(_strip_fence(content))
     except json.JSONDecodeError as exc:
         raise LLMError(f"LLM 返回内容不是合法 JSON：{content[:400]}") from exc
+
+
+def chat_text(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.2,
+    timeout: float = 180.0,
+    max_tokens: int = 2048,
+    usage_sink: Callable[[LLMUsage], None] | None = None,
+    model_name: str | None = None,
+) -> str:
+    """调用对话模型并返回纯文本回答，用于问答生成。"""
+    if not is_configured():
+        raise LLMNotConfigured("未配置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
+
+    lc_messages = _to_messages(messages)
+    response = _invoke(
+        lc_messages,
+        temperature=temperature,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        json_mode=False,
+        usage_sink=usage_sink,
+        model_name=model_name,
+    )
+    content = _content(response)
+    if not content.strip():
+        response = _invoke(
+            lc_messages,
+            temperature=temperature,
+            timeout=timeout,
+            max_tokens=min(max_tokens * 2, 8192),
+            json_mode=False,
+            usage_sink=usage_sink,
+            model_name=model_name,
+        )
+        content = _content(response)
+    if not content.strip():
+        raise LLMError("LLM 返回空内容")
+    return content.strip()

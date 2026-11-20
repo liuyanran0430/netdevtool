@@ -96,7 +96,8 @@ def upload_documents(
     db: Session, kb_id: int, files: list[tuple[str, bytes]]
 ) -> list[dict[str, object]]:
     """逐个保存上传文件并落库，返回每个文件的处理结果。"""
-    if KnowledgeBaseRepository(db).get(kb_id) is None:
+    base = KnowledgeBaseRepository(db).get(kb_id)
+    if base is None:
         raise KnowledgeBaseNotFound("知识库不存在")
     if not files:
         raise UploadLimitError("请至少选择一个文件")

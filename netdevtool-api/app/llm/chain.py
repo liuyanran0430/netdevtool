@@ -52,6 +52,7 @@ def invoke_structured(
     temperature: float = 0.0,
     timeout: float = 180.0,
     max_tokens: int = 4096,
+    model_name: str | None = None,
 ) -> StructuredCall[SchemaT]:
     """执行 `prompt | model.with_structured_output(schema)` 并返回校验后的模型。"""
     json_mode = True
@@ -64,6 +65,7 @@ def invoke_structured(
             timeout=timeout,
             max_tokens=max_tokens,
             json_mode=True,
+            model_name=model_name,
         )
     except LLMError as exc:
         if not _is_bad_request(exc):
@@ -77,6 +79,7 @@ def invoke_structured(
             timeout=timeout,
             max_tokens=max_tokens,
             json_mode=False,
+            model_name=model_name,
         )
 
     content = _content(message)
@@ -89,6 +92,7 @@ def invoke_structured(
             timeout=timeout,
             max_tokens=min(max_tokens * 2, 8192),
             json_mode=json_mode,
+            model_name=model_name,
         )
         content = _content(message)
     if not content.strip():
@@ -98,10 +102,39 @@ def invoke_structured(
     try:
         payload = schema.model_validate_json(_strip_fence(content))
     except ValidationError as exc:
-        raise LLMStructureError(
-            f"LLM 返回内容不符合结构约束：{exc}", content=content, usage=usage
-        ) from exc
+        # JSON 不完整多半是输出被 max_tokens 截断：加倍 token 重试一次
+        if not _is_json_invalid(exc) or max_tokens >= 8192:
+            raise LLMStructureError(
+                f"LLM 返回内容不符合结构约束：{exc}", content=content, usage=usage
+            ) from exc
+        retry = _invoke(
+            prompt,
+            variables,
+            schema,
+            temperature=temperature,
+            timeout=timeout,
+            max_tokens=min(max_tokens * 2, 8192),
+            json_mode=json_mode,
+            model_name=model_name,
+        )
+        content = _content(retry)
+        if not content.strip():
+            raise LLMError("LLM 返回空内容")
+        usage = _extract_usage(retry)
+        try:
+            payload = schema.model_validate_json(_strip_fence(content))
+        except ValidationError as retry_exc:
+            raise LLMStructureError(
+                f"LLM 返回内容不符合结构约束：{retry_exc}",
+                content=content,
+                usage=usage,
+            ) from retry_exc
     return StructuredCall(payload=payload, usage=usage, content=content)
+
+
+def _is_json_invalid(exc: ValidationError) -> bool:
+    """判断校验失败是否由 JSON 本身不合法（如被截断）引起。"""
+    return any(error.get("type") == "json_invalid" for error in exc.errors())
 
 
 def _invoke(
@@ -113,6 +146,7 @@ def _invoke(
     timeout: float,
     max_tokens: int,
     json_mode: bool,
+    model_name: str | None = None,
 ) -> AIMessage:
     """JSON 模式走 `with_structured_output`，回退模式走普通对话链。"""
     model = _build_model(
@@ -120,6 +154,7 @@ def _invoke(
         timeout=timeout,
         max_tokens=max_tokens,
         json_mode=False,
+        model_name=model_name,
     )
     chain = (
         prompt | model.with_structured_output(schema, method="json_mode", include_raw=True)

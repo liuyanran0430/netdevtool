@@ -496,6 +496,15 @@ class SupplementFileOut(BaseModel):
     uses: int = 0
 
 
+class ChatCitationOut(APIModel):
+    """回答引用来源，用于前端展示「参考来源」并支持查看命中片段。"""
+
+    doc_id: int | None = None
+    file_name: str | None = None
+    score: float | None = None
+    snippet: str | None = None
+
+
 class ChatMessageOut(APIModel):
     """会话消息出参。"""
 
@@ -504,6 +513,15 @@ class ChatMessageOut(APIModel):
     content: str
     status: ChatMessageStatus
     mode: ChatQuestionMode
+    evidenced: bool = Field(
+        default=False, description="是否基于知识库检索证据生成（引用数 > 0）"
+    )
+    citations: list[ChatCitationOut] = Field(
+        default_factory=list, description="回答引用的知识库来源，无引用时为空"
+    )
+    feedback: int | None = Field(
+        default=None, description="当前用户对该回答的反馈：1=赞, -1=踩, 空=未反馈"
+    )
     created_at: datetime
 
 
@@ -533,15 +551,58 @@ class ChatMessageCreate(BaseModel):
     vendor: str | None = Field(default=None, max_length=64)
 
 
+class ChatClarifyOut(BaseModel):
+    """追问信息：问题、可选项与是否允许自由输入。"""
+
+    question: str
+    options: list[str] = Field(default_factory=list)
+    allow_free_text: bool = True
+
+
 class ChatSendResult(BaseModel):
-    """发送结果：会话信息 + 本次落库的两条消息。"""
+    """发送结果：会话信息 + 本次落库的两条消息 + 意图与追问信息。"""
 
     session: ChatSessionOut
     user_message: ChatMessageOut
     assistant_message: ChatMessageOut
+    intent: ChatQuestionMode
+    mode_selected: ChatQuestionMode
+    clarify: ChatClarifyOut | None = None
+
+
+class ChatProgressOut(BaseModel):
+    """问答处理阶段：intent / retrieval / generation；None 表示已结束或未知。"""
+
+    stage: str | None = None
 
 
 class ChatSessionRename(BaseModel):
     """重命名会话入参。"""
 
     title: str = Field(min_length=1, max_length=128)
+
+
+class ChatFeedbackIn(BaseModel):
+    """回答反馈入参：rating=-1 时必须给出原因，0 表示取消反馈。"""
+
+    rating: int = Field(..., ge=-1, le=1, description="1=赞, -1=踩, 0=取消")
+    reason: str | None = Field(default=None, max_length=255, description="点踩原因")
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "ChatFeedbackIn":
+        if self.rating == -1:
+            reason = " ".join((self.reason or "").split())
+            if not reason:
+                raise ValueError("点踩需要填写原因")
+            self.reason = reason[:255]
+        elif self.rating == 1:
+            self.reason = None
+        return self
+
+
+class ChatFeedbackOut(APIModel):
+    """回答反馈出参：rating=0 表示已取消。"""
+
+    message_id: int
+    rating: int
+    reason: str | None = None

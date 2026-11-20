@@ -90,12 +90,17 @@ def _parse_pdf(path: Path) -> ParsedDocument:
     return ParsedDocument(text="\n\n".join(pages), meta={"pages": len(reader.pages)})
 
 
+def _normalize_newlines(text: str) -> str:
+    """统一换行符，避免 CRLF 导致分隔符匹配失败。"""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def parse_document(path: Path, file_type: str) -> ParsedDocument:
     """按文件类型抽取纯文本。"""
     if file_type == "markdown":
-        return ParsedDocument(text=_decode(path.read_bytes()))
+        return ParsedDocument(text=_normalize_newlines(_decode(path.read_bytes())))
     if file_type == "yaml":
-        return ParsedDocument(text=_decode(path.read_bytes()))
+        return ParsedDocument(text=_normalize_newlines(_decode(path.read_bytes())))
     if file_type == "excel":
         return _parse_excel(path)
     if file_type == "pdf":

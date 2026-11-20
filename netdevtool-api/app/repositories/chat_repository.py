@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     ChatMessage,
+    ChatMessageFeedback,
     ChatMessageRole,
     ChatMessageStatus,
     ChatQuestionMode,
@@ -86,3 +87,51 @@ class ChatRepository:
         """累加消息数并刷新排序时间。"""
         session.message_count += added
         session.last_message_at = at
+
+    def get_message(self, message_id: int) -> ChatMessage | None:
+        return self.db.get(ChatMessage, message_id)
+
+    def list_feedbacks(
+        self, message_ids: list[int], user_id: int
+    ) -> list[ChatMessageFeedback]:
+        """批量取当前用户对一组消息的反馈。"""
+        if not message_ids:
+            return []
+        stmt = select(ChatMessageFeedback).where(
+            ChatMessageFeedback.message_id.in_(message_ids),
+            ChatMessageFeedback.user_id == user_id,
+        )
+        return list(self.db.scalars(stmt))
+
+    def upsert_feedback(
+        self, *, message_id: int, user_id: int, rating: int, reason: str | None
+    ) -> ChatMessageFeedback:
+        """写入或更新反馈：同一用户对同一消息仅保留一条。"""
+        stmt = select(ChatMessageFeedback).where(
+            ChatMessageFeedback.message_id == message_id,
+            ChatMessageFeedback.user_id == user_id,
+        )
+        feedback = self.db.scalars(stmt).first()
+        if feedback is None:
+            feedback = ChatMessageFeedback(
+                message_id=message_id,
+                user_id=user_id,
+                rating=rating,
+                reason=reason,
+            )
+            self.db.add(feedback)
+        else:
+            feedback.rating = rating
+            feedback.reason = reason
+        self.db.flush()
+        return feedback
+
+    def delete_feedback(self, *, message_id: int, user_id: int) -> None:
+        stmt = select(ChatMessageFeedback).where(
+            ChatMessageFeedback.message_id == message_id,
+            ChatMessageFeedback.user_id == user_id,
+        )
+        feedback = self.db.scalars(stmt).first()
+        if feedback is not None:
+            self.db.delete(feedback)
+            self.db.flush()
