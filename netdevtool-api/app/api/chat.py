@@ -1,6 +1,10 @@
 """智能问答会话路由：会话列表、详情与消息发送。"""
 
+import json
+from collections.abc import Iterator
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,13 +14,11 @@ from app.models import ChatMessageCitation, User
 from app.repositories.chat_repository import ChatRepository
 from app.schemas import (
     ChatCitationOut,
-    ChatClarifyOut,
     ChatFeedbackIn,
     ChatFeedbackOut,
     ChatMessageCreate,
     ChatMessageOut,
     ChatProgressOut,
-    ChatSendResult,
     ChatSessionDetailOut,
     ChatSessionOut,
     ChatSessionRename,
@@ -137,20 +139,25 @@ def delete_chat_session(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+def _sse(events: Iterator[dict]) -> Iterator[str]:
+    """把服务层事件编码为 SSE 帧。"""
+    for item in events:
+        payload = json.dumps(item["data"], ensure_ascii=False, default=str)
+        yield f"event: {item['event']}\ndata: {payload}\n\n"
+
+
 @router.post(
-    "/messages",
-    response_model=ChatSendResult,
-    status_code=status.HTTP_201_CREATED,
-    summary="发送消息（session_id 为空时自动创建会话）",
+    "/messages/stream",
+    summary="发送消息并流式返回（SSE，command/knowledge 逐字输出）",
 )
-def send_chat_message(
+def stream_chat_message(
     payload: ChatMessageCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     request_id: str | None = Header(default=None, alias="X-Chat-Request-Id"),
-) -> ChatSendResult:
+) -> StreamingResponse:
     try:
-        outcome = chat_service.send_message(
+        prepared = chat_service.prepare_stream_turn(
             db,
             user_id=user.id,
             session_id=payload.session_id,
@@ -161,20 +168,26 @@ def send_chat_message(
         )
     except chat_service.ChatSessionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
+    except chat_service.ChatModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception:
         chat_progress.clear_stage(request_id)
-    assistant_out = _attach_evidence(
-        db, [outcome.assistant_message], user_id=user.id
-    )[0]
-    return ChatSendResult(
-        session=ChatSessionOut.model_validate(outcome.session),
-        user_message=ChatMessageOut.model_validate(outcome.user_message),
-        assistant_message=assistant_out,
-        intent=outcome.intent,
-        mode_selected=outcome.mode_selected,
-        clarify=(
-            ChatClarifyOut(**outcome.clarify) if outcome.clarify is not None else None
-        ),
+        raise
+
+    def events() -> Iterator[str]:
+        try:
+            yield from _sse(chat_service.stream_turn_events(prepared))
+        finally:
+            chat_progress.clear_stage(request_id)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

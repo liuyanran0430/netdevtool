@@ -11,8 +11,10 @@ from app.rag.schema import Chunk, ChunkingConfig, NeedManualError
 
 _ESCAPES = {"\\n": "\n", "\\r": "\r", "\\t": "\t"}
 
-# 一级/二级标题与分隔线作为父块的硬边界，避免父块跨小节
-_SECTION_SPLIT = re.compile(r"(?m)^(?=#{1,2}\s|-{3,}\s*$)")
+# 标题行：`#### 1.1.1.1 xxx`，用于识别父块的标题路径
+_HEADING_LINE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+# 分隔线作为父块的硬边界
 _RULE_LINE = re.compile(r"(?m)^(?:-{3,}|\*{3,}|_{3,})\s*$")
 
 _QA_QUESTION = re.compile(r"^\s*(?:Q|问|问题)\s*[:：]\s*", re.IGNORECASE)
@@ -89,37 +91,78 @@ def _general_chunks(text: str, config: ChunkingConfig) -> list[Chunk]:
     return chunks
 
 
-def _split_sections(text: str) -> list[str]:
-    """按一级/二级标题和分隔线预切小节，保证父块不会跨越标题。"""
+def heading_break_pattern(levels_text: str) -> re.Pattern[str] | None:
+    """按标题级别生成父块硬边界正则；级别为空时返回 None（不切）。"""
+    levels = {
+        int(part)
+        for part in (levels_text or "").split(",")
+        if part.strip().isdigit() and 1 <= int(part) <= 6
+    }
+    if not levels:
+        return None
+    marks = "|".join("#" * level for level in sorted(levels, reverse=True))
+    # 行首前瞻，保留标题行本身，且 H6 不会被 H4 规则误伤
+    return re.compile(rf"(?m)^(?=(?:{marks})\s)")
+
+
+def _split_sections(text: str, levels_text: str) -> list[str]:
+    """按配置的标题级别与分隔线预切小节，保证父块不跨越标题。"""
+    pattern = heading_break_pattern(levels_text)
+    raw_parts = pattern.split(text) if pattern else [text]
     sections: list[str] = []
-    for section in _SECTION_SPLIT.split(text):
-        cleaned = section.strip()
-        # 丢弃只剩分隔线的空片段
-        if not cleaned or not _RULE_LINE.sub("", cleaned).strip():
-            continue
-        sections.append(cleaned)
+    for part in raw_parts:
+        # 分隔线单独成行时再切一刀，丢弃只剩分隔线的空片段
+        for section in re.split(r"(?m)^(?=(?:-{3,}|\*{3,}|_{3,})\s*$)", part):
+            cleaned = section.strip()
+            if not cleaned or not _RULE_LINE.sub("", cleaned).strip():
+                continue
+            sections.append(cleaned)
     return sections
 
 
 def _parent_child_chunks(text: str, config: ChunkingConfig) -> list[Chunk]:
-    parent_delimiter = normalize_delimiter(config.parent_delimiter, "\n\n")
+    # 父块边界由标题级别决定，段落拼装固定按空行
+    parent_delimiter = "\n\n"
     child_delimiter = normalize_delimiter(config.child_delimiter, "\n")
     parent_max = max(config.parent_max_length, 50)
     child_max = max(config.child_max_length, 20)
 
     chunks: list[Chunk] = []
     parent_index = 0
-    for section in _split_sections(text):
-        for parent in _split_by(section, parent_delimiter, parent_max):
-            children = _split_by(parent, child_delimiter, child_max)
-            for child in children:
+    # 标题栈：记录当前所处的标题路径，供父块补上下文
+    stack: list[tuple[int, str]] = []
+
+    for section in _split_sections(text, config.heading_split_levels):
+        heading = _HEADING_LINE.match(section.split("\n", 1)[0])
+        own_level: int | None = None
+        if heading:
+            own_level = len(heading.group(1))
+            while stack and stack[-1][0] >= own_level:
+                stack.pop()
+            stack.append((own_level, heading.group(2)))
+            # 只有标题、没有正文的小节（如仅作为目录层级）不单独成块
+            body = _RULE_LINE.sub("", _HEADING_LINE.sub("", section)).strip()
+            if not body:
+                continue
+
+        for position, parent in enumerate(
+            _split_by(section, parent_delimiter, parent_max)
+        ):
+            titles = [title for _, title in stack]
+            # 首个父块已含自身标题，只补祖先路径；续块补完整路径
+            if position == 0 and own_level is not None:
+                titles = titles[:-1]
+            prefix = " > ".join(titles)
+            parent_text = f"{prefix}\n\n{parent}" if prefix else parent
+
+            for child in _split_by(parent, child_delimiter, child_max):
                 chunks.append(
                     Chunk(
                         text=child,
                         kind="child",
                         index=len(chunks),
                         parent_index=parent_index,
-                        parent_text=parent,
+                        parent_text=parent_text,
                     )
                 )
             parent_index += 1

@@ -4,6 +4,8 @@ OpenAPI 契约：/openapi.json（Swagger UI: /docs，ReDoc: /redoc）
 修改接口后执行 script/export_openapi.py 刷新契约文件，前端类型以其为准手工同步。
 """
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -20,7 +22,23 @@ TAGS_METADATA = [
 ]
 
 
+def _configure_logging() -> None:
+    """让 app.* 的 INFO 日志（含工具调用）可见，同时压掉 SQL/HTTP 噪声。"""
+    app_logger = logging.getLogger("app")
+    if not app_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        app_logger.addHandler(handler)
+        app_logger.setLevel(logging.INFO)
+        app_logger.propagate = False
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 def create_app() -> FastAPI:
+    _configure_logging()
     app = FastAPI(
         title=settings.APP_NAME,
         version="0.1.0",

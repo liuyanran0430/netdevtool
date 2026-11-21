@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-REM === NetDev Tool: Stop Backend(:8083), Celery Worker, Frontend(:5175) and local Qdrant(:6333) ===
+REM === NetDev Tool: Stop Backend(:8083), Celery Worker/Beat, Frontend(:5175) and local Qdrant(:6333) ===
 
 set "PATH=C:\Windows\System32;%PATH%"
 
@@ -25,6 +25,13 @@ echo [NetDev] Looking for Celery worker window ...
 taskkill /FI "WINDOWTITLE eq NetDev-Tool-Celery" /T /F >nul 2>&1
 if not errorlevel 1 (
     echo [NetDev] Celery worker stopped
+    set "FOUND=1"
+)
+
+echo [NetDev] Looking for Celery beat window ...
+taskkill /FI "WINDOWTITLE eq NetDev-Tool-CeleryBeat" /T /F >nul 2>&1
+if not errorlevel 1 (
+    echo [NetDev] Celery beat stopped
     set "FOUND=1"
 )
 

@@ -16,43 +16,31 @@ from app.models import (
     KnowledgeBase,
     KnowledgeBaseIndexingMode,
     KnowledgeBaseRetrievalMode,
+    KnowledgeBaseType,
 )
 from app.rag.embedding import encode_dense, sparse_encode
 from app.rag.qdrant_store import QdrantStore
 from app.rag.reranker import RerankError, rerank_documents
+from app.rag.schema import QA_EVIDENCE_MAX_CHARS
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
-from app.services.knowledge_base_service import (
-    KnowledgeBaseDocType,
-    resolve_document_doc_type,
-)
+from app.services.knowledge_base_service import resolve_kb_type
 
 _RECALL_LIMIT = 30
-_REFERENCE_MAX_CHARS = 1500
 _RERANK_DOCUMENT_MAX_CHARS = 2000
 _RRF_K = 60
+_DEFAULT_SEMANTIC_WEIGHT = 50
 
 # 各意图类型对应的知识库类型：库级严格一一对应，决定扫描哪些库
 MODE_KB_TYPES: dict[str, set[str]] = {
     ChatQuestionMode.command.value: {
-        KnowledgeBaseDocType.manual.value,
+        KnowledgeBaseType.manual.value,
     },
     ChatQuestionMode.troubleshoot.value: {
-        KnowledgeBaseDocType.troubleshooting.value,
+        KnowledgeBaseType.troubleshooting.value,
     },
     ChatQuestionMode.knowledge.value: {
-        KnowledgeBaseDocType.architecture.value,
+        KnowledgeBaseType.architecture.value,
     },
-}
-
-# dense 语义权重（0-100），其余归 sparse：命令名要靠关键词命中，概念题语义更重要
-MODE_RETRIEVAL_CONFIG: dict[str, dict[str, float]] = {
-    ChatQuestionMode.command.value: {"semantic_weight": 30, "top_k": 6, "threshold": 0.45},
-    ChatQuestionMode.troubleshoot.value: {
-        "semantic_weight": 50,
-        "top_k": 6,
-        "threshold": 0.45,
-    },
-    ChatQuestionMode.knowledge.value: {"semantic_weight": 65, "top_k": 6, "threshold": 0.45},
 }
 
 # 各类型的检索串模板：补上领域词，提升 sparse 命中率
@@ -165,9 +153,6 @@ def retrieve_for_qa(
     trace_id: str | None = None,
 ) -> QaRetrievalResult:
     """按意图类型检索问答证据；无知识库时返回空结果。"""
-    config = MODE_RETRIEVAL_CONFIG.get(
-        mode, MODE_RETRIEVAL_CONFIG[ChatQuestionMode.knowledge.value]
-    )
     allowed_types = MODE_KB_TYPES.get(
         mode, MODE_KB_TYPES[ChatQuestionMode.knowledge.value]
     )
@@ -182,7 +167,7 @@ def retrieve_for_qa(
     targets = [
         base
         for base in stored
-        if resolve_document_doc_type(base).value in allowed_types
+        if resolve_kb_type(base).value in allowed_types
     ]
     if not targets:
         trace.update(status="skipped", reason="no_knowledge_base_for_mode", kb_ids=[])
@@ -245,7 +230,23 @@ def retrieve_for_qa(
         trace.update(status="no_recall", reason="no_matching_chunks")
         return QaRetrievalResult(trace=trace)
 
-    fused = _merge_rrf(dense_recalls, sparse_recalls, int(config["semantic_weight"]))
+    # 语义权重按库配置生效：各库先独立融合，再合并排序
+    weights = {
+        base.id: max(
+            0,
+            min(100, int(base.hybrid_semantic_weight or _DEFAULT_SEMANTIC_WEIGHT)),
+        )
+        for base in targets
+    }
+    fused: list[_Recall] = []
+    for base in targets:
+        kb_dense = [item for item in dense_recalls if item.kb_id == base.id]
+        kb_sparse = [item for item in sparse_recalls if item.kb_id == base.id]
+        if kb_dense or kb_sparse:
+            fused.extend(_merge_rrf(kb_dense, kb_sparse, weights[base.id]))
+    fused.sort(key=lambda item: item.score, reverse=True)
+    trace["semantic_weights"] = {str(kb_id): weight for kb_id, weight in weights.items()}
+
     filtered = [
         recall
         for recall in fused
@@ -258,13 +259,9 @@ def retrieve_for_qa(
         trace.update(status="filtered_out", reason="vendor_mismatch")
         return QaRetrievalResult(trace=trace)
 
-    # 检索条数与阈值以知识库配置为准，mode 配置只作为兜底
-    kb_top_k = max((int(base.hybrid_top_k) for base in targets), default=0)
-    top_k = max(1, min(kb_top_k or int(config["top_k"]), len(filtered)))
-    thresholds = {
-        base.id: float(base.hybrid_score_threshold or config["threshold"])
-        for base in targets
-    }
+    # 检索条数与阈值一律以知识库配置为准
+    top_k = max(1, min(max(int(base.hybrid_top_k) for base in targets), len(filtered)))
+    thresholds = {base.id: float(base.hybrid_score_threshold) for base in targets}
     try:
         scores = rerank_documents(
             query=retrieval_query,
@@ -273,12 +270,10 @@ def retrieve_for_qa(
             biz_type="chat_messages",
             trace_id=trace_id,
         )
-        fallback_threshold = float(config["threshold"])
         selected = [
             item
             for item in scores
-            if item.score
-            >= thresholds.get(filtered[item.index].kb_id, fallback_threshold)
+            if item.score >= thresholds[filtered[item.index].kb_id]
         ][:top_k]
         trace.update(
             status="reranked",
@@ -311,5 +306,5 @@ def _evidence(recall: _Recall, score: float) -> QaEvidence:
         chunk_index=int(payload.get("chunk_index") or 0),
         point_id=str(recall.point.id),
         score=round(float(score), 6),
-        text=text[:_REFERENCE_MAX_CHARS],
+        text=text[:QA_EVIDENCE_MAX_CHARS],
     )

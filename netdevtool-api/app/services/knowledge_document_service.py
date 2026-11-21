@@ -350,10 +350,10 @@ def _to_chunking_config(base: KnowledgeBase) -> ChunkingConfig:
         general_delimiter=normalize_delimiter(base.general_delimiter or "", "\\n\\n"),
         general_max_length=base.general_max_length or 500,
         general_overlap=base.general_overlap or 0,
-        parent_delimiter=normalize_delimiter(base.parent_delimiter or "", "\\n\\n"),
         parent_max_length=base.parent_max_length or 1000,
         child_delimiter=normalize_delimiter(base.child_delimiter or "", "\\n"),
         child_max_length=base.child_max_length or 200,
+        heading_split_levels=base.heading_split_levels or "",
     )
 
 

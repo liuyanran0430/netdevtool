@@ -101,6 +101,12 @@ taskkill /FI "WINDOWTITLE eq NetDev-Tool-Celery" /T /F >nul 2>&1
 echo [NetDev] Starting Celery worker ...
 start "NetDev-Tool-Celery" /d "%ROOT%\netdevtool-api" cmd /k ".venv\Scripts\python.exe -m celery -A app.tasks.celery_app worker --loglevel=info --pool=solo"
 
+REM ---------- 5.1 Celery Beat (daily maintenance) ----------
+echo [NetDev] Cleaning up existing Celery beat ...
+taskkill /FI "WINDOWTITLE eq NetDev-Tool-CeleryBeat" /T /F >nul 2>&1
+echo [NetDev] Starting Celery beat ...
+start "NetDev-Tool-CeleryBeat" /d "%ROOT%\netdevtool-api" cmd /k ".venv\Scripts\python.exe -m celery -A app.tasks.celery_app beat --loglevel=info"
+
 REM ---------- 6. Frontend (Vite :5175) ----------
 echo [NetDev] Cleaning up any existing process on port 5175 ...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr :5175 ^| findstr LISTENING') do (
@@ -117,6 +123,7 @@ echo [NetDev]   Redis    : Windows service "Redis"
 echo [NetDev]   Qdrant   : http://localhost:6333  (local, .qdrant-server)
 echo [NetDev]   Backend  : http://localhost:8083  (docs: /docs)
 echo [NetDev]   Celery   : standalone worker window (--pool=solo)
+echo [NetDev]   Beat     : daily maintenance (ai_runs retention)
 echo [NetDev]   Frontend : http://localhost:5175
 echo.
 endlocal

@@ -69,10 +69,10 @@ class KnowledgeBaseOut(APIModel):
     general_delimiter: str | None = None
     general_max_length: int | None = None
     general_overlap: int | None = None
-    parent_delimiter: str | None = None
     parent_max_length: int | None = None
     child_delimiter: str | None = None
     child_max_length: int | None = None
+    heading_split_levels: str = "1,2"
     indexing_mode: KnowledgeBaseIndexingMode
     retrieval_mode: KnowledgeBaseRetrievalMode
     hybrid_semantic_weight: int
@@ -99,10 +99,15 @@ class KnowledgeBaseConfigUpdate(BaseModel):
     general_delimiter: str = Field(default="", max_length=32)
     general_max_length: int | None = Field(default=None, ge=1, le=5000)
     general_overlap: int | None = Field(default=None, ge=0, le=5000)
-    parent_delimiter: str = Field(default="", max_length=32)
     parent_max_length: int | None = Field(default=None, ge=1, le=5000)
     child_delimiter: str = Field(default="", max_length=32)
     child_max_length: int | None = Field(default=None, ge=1, le=5000)
+    heading_split_levels: str = Field(
+        default="1,2",
+        max_length=16,
+        pattern=r"^$|^[1-6](,[1-6])*$",
+        description="父块标题硬边界级别，逗号分隔；空表示不按标题切",
+    )
     indexing_mode: KnowledgeBaseIndexingMode
     retrieval_mode: KnowledgeBaseRetrievalMode
     hybrid_semantic_weight: int = Field(ge=0, le=100)
@@ -549,25 +554,6 @@ class ChatMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
     mode: ChatQuestionMode = ChatQuestionMode.unknown
     vendor: str | None = Field(default=None, max_length=64)
-
-
-class ChatClarifyOut(BaseModel):
-    """追问信息：问题、可选项与是否允许自由输入。"""
-
-    question: str
-    options: list[str] = Field(default_factory=list)
-    allow_free_text: bool = True
-
-
-class ChatSendResult(BaseModel):
-    """发送结果：会话信息 + 本次落库的两条消息 + 意图与追问信息。"""
-
-    session: ChatSessionOut
-    user_message: ChatMessageOut
-    assistant_message: ChatMessageOut
-    intent: ChatQuestionMode
-    mode_selected: ChatQuestionMode
-    clarify: ChatClarifyOut | None = None
 
 
 class ChatProgressOut(BaseModel):

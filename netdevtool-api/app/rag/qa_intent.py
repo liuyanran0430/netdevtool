@@ -35,6 +35,9 @@ INTENT_SYSTEM_PROMPT = """你是网络运维问答助手的意图分类器，只
 1. 以问题内容为准，忽略用户前端选择的类型。
 2. 含报错、日志、现象描述 → troubleshoot；出现命令样式文本或问「什么命令/怎么配/参数」→ command；
    概念、原理、架构 → knowledge。
+   当现象描述与配置/命令诉求同时出现时，以配置诉求优先判 command。
+   例如「端口插上电脑要等半分钟才有网，帮我查让它马上转发的配置」属于 command，
+   只有用户要求排查原因、定位故障或给出处理步骤时才判 troubleshoot。
 3. 介于两类之间时倾向不判 out_of_scope；只有明显与网络运维领域无关才判 out_of_scope。
 4. missing_slots：按类型给出缺失的关键信息，用简短中文标签，例如：
    - command：`厂商型号`（未指明且厂商上下文为 all）、`功能或命令`
@@ -44,6 +47,9 @@ INTENT_SYSTEM_PROMPT = """你是网络运维问答助手的意图分类器，只
 5. clarify_question：当存在缺失槽位且补充后能显著提高回答质量时，给出一句追问，
    只问最关键的一个槽位，并提醒可选项；否则返回 null。
 6. reason：一句话说明判定依据（中文，不超过 40 字）。
+
+厂商上下文约束：当厂商上下文不是 all 时，厂商已经确定，
+missing_slots 与 clarify_question 都不得再询问厂商或品牌，也不要输出「厂商型号」槽位。
 
 输出 JSON 字段：mode、missing_slots、clarify_question、reason。"""
 
@@ -89,6 +95,31 @@ def _fallback(selected_mode: str, error: str) -> IntentResult:
     )
 
 
+VENDOR_SLOT_MARKERS = ("厂商", "品牌", "vendor")
+
+
+def _mentions_vendor(text: str | None) -> bool:
+    value = (text or "").lower()
+    return any(marker in value for marker in VENDOR_SLOT_MARKERS)
+
+
+def _strip_vendor_slots(
+    result: IntentResult, vendor: str | None
+) -> IntentResult:
+    """厂商上下文已确定时，不再追问厂商或品牌。"""
+    if not vendor or vendor.strip().lower() == "all":
+        return result
+    slots = [slot for slot in result.missing_slots if not _mentions_vendor(slot)]
+    question = result.clarify_question
+    if question and _mentions_vendor(question):
+        question = None
+    if slots == result.missing_slots and question == result.clarify_question:
+        return result
+    return result.model_copy(
+        update={"missing_slots": slots, "clarify_question": question}
+    )
+
+
 def detect_intent(
     content: str,
     *,
@@ -112,6 +143,6 @@ def detect_intent(
             max_tokens=512,
             model_name=settings.CHAT_INTENT_MODEL or settings.CHAT_QA_MODEL or None,
         )
-        return call.payload
+        return _strip_vendor_slots(call.payload, vendor)
     except LLMError as exc:
         return _fallback(selected_mode, str(exc))

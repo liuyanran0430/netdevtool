@@ -2417,13 +2417,13 @@
         }
       }
     },
-    "/api/v1/chat/messages": {
+    "/api/v1/chat/messages/stream": {
       "post": {
         "tags": [
           "chat"
         ],
-        "summary": "发送消息（session_id 为空时自动创建会话）",
-        "operationId": "send_chat_message_api_v1_chat_messages_post",
+        "summary": "发送消息并流式返回（SSE，command/knowledge 逐字输出）",
+        "operationId": "stream_chat_message_api_v1_chat_messages_stream_post",
         "parameters": [
           {
             "name": "X-Chat-Request-Id",
@@ -2469,13 +2469,11 @@
           }
         },
         "responses": {
-          "201": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChatSendResult"
-                }
+                "schema": {}
               }
             }
           },
@@ -2712,32 +2710,6 @@
         "title": "ChatCitationOut",
         "description": "回答引用来源，用于前端展示「参考来源」并支持查看命中片段。"
       },
-      "ChatClarifyOut": {
-        "properties": {
-          "question": {
-            "type": "string",
-            "title": "Question"
-          },
-          "options": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Options"
-          },
-          "allow_free_text": {
-            "type": "boolean",
-            "title": "Allow Free Text",
-            "default": true
-          }
-        },
-        "type": "object",
-        "required": [
-          "question"
-        ],
-        "title": "ChatClarifyOut",
-        "description": "追问信息：问题、可选项与是否允许自由输入。"
-      },
       "ChatFeedbackIn": {
         "properties": {
           "rating": {
@@ -2954,45 +2926,6 @@
         ],
         "title": "ChatQuestionMode",
         "description": "问答模式，与前端输入框的模式选项一致。"
-      },
-      "ChatSendResult": {
-        "properties": {
-          "session": {
-            "$ref": "#/components/schemas/ChatSessionOut"
-          },
-          "user_message": {
-            "$ref": "#/components/schemas/ChatMessageOut"
-          },
-          "assistant_message": {
-            "$ref": "#/components/schemas/ChatMessageOut"
-          },
-          "intent": {
-            "$ref": "#/components/schemas/ChatQuestionMode"
-          },
-          "mode_selected": {
-            "$ref": "#/components/schemas/ChatQuestionMode"
-          },
-          "clarify": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChatClarifyOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "type": "object",
-        "required": [
-          "session",
-          "user_message",
-          "assistant_message",
-          "intent",
-          "mode_selected"
-        ],
-        "title": "ChatSendResult",
-        "description": "发送结果：会话信息 + 本次落库的两条消息 + 意图与追问信息。"
       },
       "ChatSessionDetailOut": {
         "properties": {
@@ -3249,12 +3182,6 @@
             ],
             "title": "General Overlap"
           },
-          "parent_delimiter": {
-            "type": "string",
-            "maxLength": 32,
-            "title": "Parent Delimiter",
-            "default": ""
-          },
           "parent_max_length": {
             "anyOf": [
               {
@@ -3286,6 +3213,14 @@
               }
             ],
             "title": "Child Max Length"
+          },
+          "heading_split_levels": {
+            "type": "string",
+            "maxLength": 16,
+            "pattern": "^$|^[1-6](,[1-6])*$",
+            "title": "Heading Split Levels",
+            "description": "父块标题硬边界级别，逗号分隔；空表示不按标题切",
+            "default": "1,2"
           },
           "indexing_mode": {
             "$ref": "#/components/schemas/KnowledgeBaseIndexingMode"
@@ -3383,17 +3318,6 @@
             ],
             "title": "General Overlap"
           },
-          "parent_delimiter": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Parent Delimiter"
-          },
           "parent_max_length": {
             "anyOf": [
               {
@@ -3426,6 +3350,11 @@
               }
             ],
             "title": "Child Max Length"
+          },
+          "heading_split_levels": {
+            "type": "string",
+            "title": "Heading Split Levels",
+            "default": "1,2"
           },
           "indexing_mode": {
             "$ref": "#/components/schemas/KnowledgeBaseIndexingMode"

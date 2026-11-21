@@ -27,10 +27,8 @@ import {
 } from 'antd'
 import type { UploadFile } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Markdown from 'react-markdown'
-import type { Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import configGuide from '../../../knowledges/docs/知识库配置说明.md?raw'
+import { MarkdownContent } from '../components/Markdown'
 import {
   deleteKnowledgeDocument,
   fetchKnowledgeBases,
@@ -59,7 +57,7 @@ export interface KnowledgeConfig {
     mode: 'general' | 'parent-child' | 'qa'
     general: { delimiter: string; maxLength: number; overlap: number }
     parentChild: {
-      parent: { delimiter: string; maxLength: number }
+      parent: { maxLength: number; headingLevels: number[] }
       child: { delimiter: string; maxLength: number }
     }
   }
@@ -73,13 +71,20 @@ const DEFAULT_CONFIG: KnowledgeConfig = {
     mode: 'general',
     general: { delimiter: '\\n\\n', maxLength: 500, overlap: 50 },
     parentChild: {
-      parent: { delimiter: '\\n\\n', maxLength: 1000 },
+      parent: { maxLength: 1000, headingLevels: [1, 2] },
       child: { delimiter: '\\n', maxLength: 200 },
     },
   },
   indexing: 'high',
   retrieval: 'hybrid',
   hybrid: { semanticWeight: 50, topK: 3, scoreThreshold: 0.6 },
+}
+
+function parseHeadingLevels(value: string | null | undefined): number[] {
+  return (value ?? '')
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((level) => Number.isInteger(level) && level >= 1 && level <= 6)
 }
 
 function configFromBase(base: KnowledgeBaseDto): KnowledgeConfig {
@@ -97,12 +102,10 @@ function configFromBase(base: KnowledgeBaseDto): KnowledgeConfig {
       },
       parentChild: {
         parent: {
-          delimiter:
-            base.parent_delimiter ??
-            DEFAULT_CONFIG.chunking.parentChild.parent.delimiter,
           maxLength:
             base.parent_max_length ??
             DEFAULT_CONFIG.chunking.parentChild.parent.maxLength,
+          headingLevels: parseHeadingLevels(base.heading_split_levels),
         },
         child: {
           delimiter:
@@ -130,10 +133,12 @@ function toConfigPayload(config: KnowledgeConfig): KnowledgeBaseConfigPayload {
     general_delimiter: config.chunking.general.delimiter,
     general_max_length: config.chunking.general.maxLength,
     general_overlap: config.chunking.general.overlap,
-    parent_delimiter: config.chunking.parentChild.parent.delimiter,
     parent_max_length: config.chunking.parentChild.parent.maxLength,
     child_delimiter: config.chunking.parentChild.child.delimiter,
     child_max_length: config.chunking.parentChild.child.maxLength,
+    heading_split_levels: (
+      config.chunking.parentChild.parent.headingLevels ?? []
+    ).join(','),
     indexing_mode: config.indexing,
     retrieval_mode: config.retrieval,
     hybrid_semantic_weight: config.hybrid.semanticWeight,
@@ -551,7 +556,6 @@ interface ChunkingErrors {
   delimiter?: string
   maxLength?: string
   overlap?: string
-  parentDelimiter?: string
   parentMaxLength?: string
   childDelimiter?: string
   childMaxLength?: string
@@ -579,8 +583,6 @@ function validateChunking(
     }
   } else if (cfg.mode === 'parent-child') {
     const pc = cfg.parentChild
-    if (!pc.parent.delimiter.trim())
-      e.parentDelimiter = '父分段分隔符不能为空'
     if (
       !Number.isFinite(pc.parent.maxLength) ||
       pc.parent.maxLength < 20 ||
@@ -879,40 +881,6 @@ function ChunkingSection({
                         </div>
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="flex flex-col gap-1.5">
-                            <label className="flex items-center gap-1 text-[12px] text-ink-500">
-                              分隔符 (Delimiter)
-                              <Tooltip title="父分段切分边界，建议使用 \\n\\n 或章节号">
-                                <InfoCircleOutlined className="text-[12px]" />
-                              </Tooltip>
-                            </label>
-                            <Input
-                              size="middle"
-                              value={chunking.parentChild.parent.delimiter}
-                              onChange={(e) =>
-                                patchChunking((c) => ({
-                                  ...c,
-                                  parentChild: {
-                                    ...c.parentChild,
-                                    parent: {
-                                      ...c.parentChild.parent,
-                                      delimiter: e.target.value,
-                                    },
-                                  },
-                                }))
-                              }
-                              status={
-                                errors.parentDelimiter ? 'error' : undefined
-                              }
-                              className="!rounded-md"
-                            />
-                            {errors.parentDelimiter ? (
-                              <span className="text-[11px] text-danger">
-                                {errors.parentDelimiter}
-                              </span>
-                            ) : null}
-                          </div>
-
-                          <div className="flex flex-col gap-1.5">
                             <label className="text-[12px] text-ink-500">
                               最大分段长度 (Max Length)
                             </label>
@@ -953,6 +921,39 @@ function ChunkingSection({
                                 建议 ≥ 子分段长度，容纳完整段落。
                               </span>
                             )}
+                          </div>
+
+                          <div className="flex flex-col gap-1.5">
+                            <label className="flex items-center gap-1 text-[12px] text-ink-500">
+                              标题硬边界级别 (Heading Levels)
+                              <Tooltip title="父块在这些级别的 Markdown 标题处强制断开，避免一个父块跨多个小节；留空表示不按标题切分">
+                                <InfoCircleOutlined className="text-[12px]" />
+                              </Tooltip>
+                            </label>
+                            <Select
+                              mode="multiple"
+                              allowClear
+                              size="middle"
+                              value={chunking.parentChild.parent.headingLevels}
+                              onChange={(values: number[]) =>
+                                patchChunking((c) => ({
+                                  ...c,
+                                  parentChild: {
+                                    ...c.parentChild,
+                                    parent: {
+                                      ...c.parentChild.parent,
+                                      headingLevels: values,
+                                    },
+                                  },
+                                }))
+                              }
+                              options={[1, 2, 3, 4, 5, 6].map((level) => ({
+                                value: level,
+                                label: `H${level}`,
+                              }))}
+                              placeholder="留空表示不按标题切分"
+                              className="w-full"
+                            />
                           </div>
                         </div>
                       </div>
@@ -2092,104 +2093,6 @@ const tabs = [
   },
 ]
 
-/* 配置说明 Markdown 样式映射 */
-const guideMarkdownComponents: Components = {
-  // 抽屉标题已展示文档名称，正文不再重复一级标题
-  h1: () => null,
-  h2: ({ children }) => (
-    <h2 className="mb-3 mt-7 flex items-center gap-2 text-[16px] font-semibold leading-6 text-ink-900">
-      <span className="h-4 w-[3px] shrink-0 rounded-full bg-brand" />
-      {children}
-    </h2>
-  ),
-  h3: ({ children }) => (
-    <h3 className="mb-2 mt-5 border-l-2 border-brand-line pl-2.5 text-[14px] font-semibold leading-6 text-ink-900">
-      {children}
-    </h3>
-  ),
-  h4: ({ children }) => (
-    <h4 className="mb-2 mt-3 text-[13px] font-semibold leading-6 text-ink-700">
-      {children}
-    </h4>
-  ),
-  p: ({ children }) => (
-    <p className="my-2.5 text-[13px] leading-[26px] text-ink-700">{children}</p>
-  ),
-  strong: ({ children }) => (
-    <strong className="font-semibold text-ink-900">{children}</strong>
-  ),
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="text-brand underline decoration-brand-line underline-offset-2 hover:text-brand-strong"
-    >
-      {children}
-    </a>
-  ),
-  ul: ({ children }) => (
-    <ul className="my-3 list-disc space-y-1.5 pl-5 text-[13px] leading-[26px] text-ink-700 marker:text-brand">
-      {children}
-    </ul>
-  ),
-  ol: ({ children }) => (
-    <ol className="my-3 list-decimal space-y-1.5 pl-5 text-[13px] leading-[26px] text-ink-700 marker:font-medium marker:text-brand">
-      {children}
-    </ol>
-  ),
-  li: ({ children }) => (
-    <li className="pl-0.5 [&_p]:my-0 [&_p]:leading-[26px]">{children}</li>
-  ),
-  blockquote: ({ children }) => (
-    <blockquote className="my-4 rounded-lg border border-brand-line bg-brand-soft/50 px-4 py-2.5 text-[13px] leading-[26px] text-ink-500 [&_p]:my-0 [&_p]:leading-[26px]">
-      {children}
-    </blockquote>
-  ),
-  code: ({ children, className }) => (
-    <code
-      className={
-        className
-          ? 'font-mono text-[12px] text-ink-700'
-          : 'rounded border border-[#DCE7FB] bg-[#F2F6FE] px-1.5 py-0.5 font-mono text-[12px] text-code-blue'
-      }
-    >
-      {children}
-    </code>
-  ),
-  pre: ({ children }) => (
-    <pre className="my-4 overflow-x-auto rounded-lg border border-line bg-soft p-4 font-mono text-[12px] leading-[22px] text-ink-700">
-      {children}
-    </pre>
-  ),
-  table: ({ children }) => (
-    <div className="my-4 overflow-x-auto rounded-lg border border-line shadow-panel">
-      <table className="w-full border-collapse text-[13px] text-ink-700">
-        {children}
-      </table>
-    </div>
-  ),
-  thead: ({ children }) => (
-    <thead className="bg-[#F4F7FE] text-ink-900">{children}</thead>
-  ),
-  tbody: ({ children }) => (
-    <tbody className="[&>tr:hover]:bg-brand-soft/40 [&>tr:nth-child(even)]:bg-soft [&>tr:last-child>td]:border-b-0">
-      {children}
-    </tbody>
-  ),
-  th: ({ children }) => (
-    <th className="whitespace-nowrap border-b border-line px-4 py-2.5 text-left text-[12px] font-semibold">
-      {children}
-    </th>
-  ),
-  td: ({ children }) => (
-    <td className="border-b border-line-soft px-4 py-2.5 align-top leading-[24px]">
-      {children}
-    </td>
-  ),
-  hr: () => <hr className="my-7 h-px border-0 bg-line" />,
-}
-
 /* 页签记忆：切换页面后恢复上次停留的页签 */
 const KNOWLEDGE_TAB_LS_KEY = 'knowledge:tab'
 
@@ -2223,7 +2126,14 @@ function readConfigDraft(baseId: number): KnowledgeConfig | undefined {
     const raw = localStorage.getItem(configDraftKey(baseId))
     if (!raw) return undefined
     const parsed = JSON.parse(raw) as KnowledgeConfig
-    return parsed?.chunking && parsed?.hybrid ? parsed : undefined
+    if (!parsed?.chunking || !parsed?.hybrid) return undefined
+    // 兼容旧草稿：缺少标题级别时回填默认值
+    const parent = parsed.chunking.parentChild?.parent
+    if (parent && !Array.isArray(parent.headingLevels)) {
+      parent.headingLevels =
+        DEFAULT_CONFIG.chunking.parentChild.parent.headingLevels
+    }
+    return parsed
   } catch {
     return undefined
   }
@@ -2583,12 +2493,7 @@ export function KnowledgeSettingsPage() {
         }}
       >
         <div className="mx-auto max-w-[720px]">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            components={guideMarkdownComponents}
-          >
-            {configGuide}
-          </Markdown>
+          <MarkdownContent content={configGuide} variant="guide" />
         </div>
       </Drawer>
     </div>

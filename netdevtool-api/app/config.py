@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     CHAT_QA_MODEL: str = ""
     CHAT_INTENT_MODEL: str = ""
 
+    # 问答生成整体时间预算（秒），含限流/超时重试，超预算直接失败
+    LLM_QA_BUDGET_SECONDS: float = 60.0
+
+    # AI 调用记录保留天数，超期由 Celery beat 每日清理
+    AI_RUN_RETENTION_DAYS: int = 30
+
     # 跨域（逗号分隔）
     CORS_ORIGINS: str = "http://localhost:5175,http://127.0.0.1:5175"
 

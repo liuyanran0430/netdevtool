@@ -27,6 +27,14 @@ def elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
 
+def _describe_error(exc: Exception) -> str:
+    """失败原因带上错误分类，便于按类型排查与统计。"""
+    kind = getattr(exc, "kind", None)
+    label = getattr(kind, "value", kind)
+    text = str(exc)
+    return f"{label}: {text}" if label else text
+
+
 @contextmanager
 def llm_run(
     *,
@@ -57,7 +65,7 @@ def llm_run(
             total_tokens=sum(item.total_tokens for item in usages),
             latency_ms=elapsed_ms(started),
             status=AiRunStatus.failed,
-            error_message=str(exc),
+            error_message=_describe_error(exc),
         )
         raise
     else:

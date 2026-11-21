@@ -15,11 +15,13 @@ from pydantic import BaseModel, ValidationError
 
 from app.llm.client import (
     LLMError,
+    LLMErrorKind,
     LLMUsage,
     _build_model,
     _content,
     _extract_usage,
     _is_bad_request,
+    _run_with_retry,
     _strip_fence,
 )
 
@@ -53,6 +55,7 @@ def invoke_structured(
     timeout: float = 180.0,
     max_tokens: int = 4096,
     model_name: str | None = None,
+    deadline: float | None = None,
 ) -> StructuredCall[SchemaT]:
     """执行 `prompt | model.with_structured_output(schema)` 并返回校验后的模型。"""
     json_mode = True
@@ -66,6 +69,7 @@ def invoke_structured(
             max_tokens=max_tokens,
             json_mode=True,
             model_name=model_name,
+            deadline=deadline,
         )
     except LLMError as exc:
         if not _is_bad_request(exc):
@@ -80,6 +84,7 @@ def invoke_structured(
             max_tokens=max_tokens,
             json_mode=False,
             model_name=model_name,
+            deadline=deadline,
         )
 
     content = _content(message)
@@ -93,10 +98,11 @@ def invoke_structured(
             max_tokens=min(max_tokens * 2, 8192),
             json_mode=json_mode,
             model_name=model_name,
+            deadline=deadline,
         )
         content = _content(message)
     if not content.strip():
-        raise LLMError("LLM 返回空内容")
+        raise LLMError("LLM 返回空内容", kind=LLMErrorKind.empty)
 
     usage = _extract_usage(message)
     try:
@@ -116,10 +122,11 @@ def invoke_structured(
             max_tokens=min(max_tokens * 2, 8192),
             json_mode=json_mode,
             model_name=model_name,
+            deadline=deadline,
         )
         content = _content(retry)
         if not content.strip():
-            raise LLMError("LLM 返回空内容")
+            raise LLMError("LLM 返回空内容", kind=LLMErrorKind.empty)
         usage = _extract_usage(retry)
         try:
             payload = schema.model_validate_json(_strip_fence(content))
@@ -147,24 +154,27 @@ def _invoke(
     max_tokens: int,
     json_mode: bool,
     model_name: str | None = None,
+    deadline: float | None = None,
 ) -> AIMessage:
     """JSON 模式走 `with_structured_output`，回退模式走普通对话链。"""
-    model = _build_model(
-        temperature=temperature,
-        timeout=timeout,
-        max_tokens=max_tokens,
-        json_mode=False,
-        model_name=model_name,
-    )
-    chain = (
-        prompt | model.with_structured_output(schema, method="json_mode", include_raw=True)
-        if json_mode
-        else prompt | model
-    )
-    try:
-        result = chain.invoke(variables)
-    except Exception as exc:  # noqa: BLE001  LangChain 内部异常类型较多，统一包装
-        raise LLMError(f"LLM 调用失败：{exc}") from exc
+
+    def call(effective_timeout: float) -> Any:
+        model = _build_model(
+            temperature=temperature,
+            timeout=effective_timeout,
+            max_tokens=max_tokens,
+            json_mode=False,
+            model_name=model_name,
+        )
+        chain = (
+            prompt
+            | model.with_structured_output(schema, method="json_mode", include_raw=True)
+            if json_mode
+            else prompt | model
+        )
+        return chain.invoke(variables)
+
+    result = _run_with_retry(call, timeout=timeout, deadline=deadline)
     if json_mode:
         return result["raw"]
     if not isinstance(result, AIMessage):

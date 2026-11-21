@@ -65,17 +65,6 @@ export interface ChatClarifyDto {
   allow_free_text: boolean
 }
 
-export interface ChatSendResultDto {
-  session: ChatSessionDto
-  user_message: ChatMessageDto
-  assistant_message: ChatMessageDto
-  /** 后端识别出的实际意图 */
-  intent: ChatQuestionMode
-  /** 前端本次选择的类型 */
-  mode_selected: ChatQuestionMode
-  clarify: ChatClarifyDto | null
-}
-
 /** 当前用户的会话列表；`keyword` 按会话消息内容过滤。 */
 export async function fetchChatSessions(keyword?: string): Promise<ChatSessionDto[]> {
   const params = new URLSearchParams()
@@ -97,24 +86,6 @@ export async function fetchChatSession(sessionId: number): Promise<ChatSessionDe
   return (await response.json()) as ChatSessionDetailDto
 }
 
-/** 发送消息；不传 session_id 时后端会自动创建新会话。 */
-export async function sendChatMessage(
-  payload: ChatSendPayload,
-  requestId?: string,
-): Promise<ChatSendResultDto> {
-  const response = await fetch(`${API_BASE}/api/v1/chat/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(),
-      ...(requestId ? { 'X-Chat-Request-Id': requestId } : {}),
-    },
-    body: JSON.stringify(payload),
-  })
-  if (!response.ok) throw await toRequestError(response, '发送消息失败')
-  return (await response.json()) as ChatSendResultDto
-}
-
 /** 查询问答处理阶段：intent / retrieval / generation，null 表示已结束。 */
 export async function fetchChatProgress(requestId: string): Promise<string | null> {
   const response = await fetch(`${API_BASE}/api/v1/chat/progress/${requestId}`, {
@@ -123,6 +94,113 @@ export async function fetchChatProgress(requestId: string): Promise<string | nul
   if (!response.ok) return null
   const data = (await response.json()) as { stage: string | null }
   return data.stage
+}
+
+/** 流式问答的事件回调。 */
+export interface ChatStreamHandlers {
+  onMeta?: (meta: {
+    session_id: number
+    user_message_id: number
+    assistant_message_id: number
+    intent: ChatQuestionMode
+    mode: ChatQuestionMode
+  }) => void
+  onStage?: (stage: string) => void
+  onDelta?: (text: string) => void
+  onResult?: (data: { content: string }) => void
+  onCitations?: (citations: ChatCitationDto[]) => void
+  onDone?: (data: {
+    assistant_message_id: number
+    status: ChatMessageStatus
+    clarify?: ChatClarifyDto | null
+  }) => void
+  onError?: (data: { message: string; kind?: string; trace_id?: string }) => void
+}
+
+/** 解析 SSE 帧：event + data，兼容多行 data。 */
+async function* readSse(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<{ event: string; data: string }> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        let event = 'message'
+        const data: string[] = []
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim()
+          else if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
+        }
+        if (data.length > 0) yield { event, data: data.join('\n') }
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/** SSE 发送消息：命令/知识逐字回调，故障排查通过 onResult 一次性返回。 */
+export async function streamChatMessage(
+  payload: ChatSendPayload,
+  requestId: string,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/v1/chat/messages/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+      'X-Chat-Request-Id': requestId,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!response.ok) throw await toRequestError(response, '发送消息失败')
+  if (!response.body) throw new Error('浏览器不支持流式响应')
+
+  for await (const frame of readSse(response.body)) {
+    let data: any
+    try {
+      data = JSON.parse(frame.data)
+    } catch {
+      continue
+    }
+    switch (frame.event) {
+      case 'meta':
+        handlers.onMeta?.(data)
+        break
+      case 'stage':
+        if (data?.stage) handlers.onStage?.(String(data.stage))
+        break
+      case 'delta':
+        if (typeof data?.text === 'string') handlers.onDelta?.(data.text)
+        break
+      case 'result':
+        handlers.onResult?.(data)
+        break
+      case 'citations':
+        if (Array.isArray(data)) handlers.onCitations?.(data)
+        break
+      case 'done':
+        handlers.onDone?.(data)
+        break
+      case 'error':
+        handlers.onError?.(data)
+        break
+      default:
+        break
+    }
+  }
 }
 
 /** 对回答点赞/点踩：rating=0 取消；点踩需给出原因。 */

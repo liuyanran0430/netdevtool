@@ -35,10 +35,10 @@ export interface KnowledgeBaseDto {
   general_delimiter: string | null
   general_max_length: number | null
   general_overlap: number | null
-  parent_delimiter: string | null
   parent_max_length: number | null
   child_delimiter: string | null
   child_max_length: number | null
+  heading_split_levels: string
   indexing_mode: 'high' | 'economical'
   retrieval_mode: 'embedding' | 'bm25' | 'hybrid'
   hybrid_semantic_weight: number
@@ -53,10 +53,10 @@ export interface KnowledgeBaseConfigPayload {
   general_delimiter: string
   general_max_length: number | null
   general_overlap: number | null
-  parent_delimiter: string
   parent_max_length: number | null
   child_delimiter: string
   child_max_length: number | null
+  heading_split_levels: string
   indexing_mode: KnowledgeBaseDto['indexing_mode']
   retrieval_mode: KnowledgeBaseDto['retrieval_mode']
   hybrid_semantic_weight: number

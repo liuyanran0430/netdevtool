@@ -9,6 +9,10 @@ class NeedManualError(RuntimeError):
     """文档需要人工补充配置或元数据后才能继续处理。"""
 
 
+# 问答证据文本上限：检索截断与提示词渲染共用，避免两处漂移
+QA_EVIDENCE_MAX_CHARS = 1500
+
+
 @dataclass(frozen=True)
 class ChunkingConfig:
     """知识库切分配置快照。"""
@@ -17,10 +21,10 @@ class ChunkingConfig:
     general_delimiter: str = "\\n\\n"
     general_max_length: int = 500
     general_overlap: int = 50
-    parent_delimiter: str = "\\n\\n"
     parent_max_length: int = 1000
     child_delimiter: str = "\\n"
     child_max_length: int = 200
+    heading_split_levels: str = "1,2"
 
 
 @dataclass

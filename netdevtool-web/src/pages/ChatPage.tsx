@@ -25,27 +25,20 @@ import {
 import { Dropdown, Input, message, Modal, Popover, Select } from 'antd'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
+import { MarkdownContent } from '../components/Markdown'
 import { PageHeader } from '../components/PageHeader'
 import {
-  deleteChatSession,
   fetchChatProgress,
-  fetchChatSession,
-  fetchChatSessions,
-  renameChatSession,
-  sendChatMessage,
   setChatMessageFeedback,
-  type ChatCitationDto,
-  type ChatClarifyDto,
-  type ChatMessageDto,
   type ChatQuestionMode,
   type ChatSessionDto,
 } from '../api/chat'
 import { fetchDevices } from '../api/devices'
 import { fetchKnowledgeStatus } from '../api/knowledge'
-import { readSession } from '../auth/session'
+import { useChatSession } from '../hooks/useChatSession'
+import type { ChatMessageView } from '../lib/chat'
 
 const VENDOR_LS_KEY = 'chat:vendor'
-const SESSION_LS_KEY = 'chat:session'
 /** 不限厂商：检索与问答不按厂商收窄，数据库按 all 保存 */
 const ANY_VENDOR = 'all'
 
@@ -71,14 +64,6 @@ const QUESTION_MODES = [
 ]
 
 type KnowledgeStatus = 'checking' | 'connected' | 'empty' | 'disconnected'
-
-/** 意图类型的中文名，用于「已按 XX 处理」提示 */
-const MODE_LABELS: Record<string, string> = {
-  command: '配置查询',
-  troubleshoot: '故障排查',
-  knowledge: '知识提问',
-  out_of_scope: '范围外',
-}
 
 const KNOWLEDGE_STATUS_META: Record<
   KnowledgeStatus,
@@ -111,17 +96,6 @@ function readStoredVendor(): string {
     return localStorage.getItem(VENDOR_LS_KEY) ?? ''
   } catch {
     return ''
-  }
-}
-
-/** 恢复上次停留的会话，切换页面回来后继续该会话 */
-function readStoredSessionId(): number | null {
-  try {
-    const raw = localStorage.getItem(SESSION_LS_KEY)
-    const parsed = raw ? Number(raw) : Number.NaN
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : null
-  } catch {
-    return null
   }
 }
 
@@ -520,35 +494,6 @@ function RobotAvatar({ size = 88 }: { size?: number }) {
   )
 }
 
-interface ChatMessageView {
-  id: string
-  /** 数据库消息 id，临时消息为空，用于反馈接口 */
-  dbId?: number
-  role: 'user' | 'assistant'
-  content: string
-  clarifying?: boolean
-  mode?: ChatQuestionMode
-  evidenced?: boolean
-  citations?: ChatCitationDto[]
-  feedback?: 1 | -1 | null
-  pending?: boolean
-  requestId?: string
-}
-
-function toChatView(message: ChatMessageDto): ChatMessageView {
-  return {
-    id: `db-${message.id}`,
-    dbId: message.id,
-    role: message.role,
-    content: message.content,
-    clarifying: message.status === 'clarifying',
-    mode: message.mode,
-    evidenced: message.evidenced,
-    citations: message.citations,
-    feedback: message.feedback ?? null,
-  }
-}
-
 interface TroubleshootData {
   hypotheses: Array<{ cause: string; confidence: number; evidence_refs?: string[] }>
   steps: Array<{ action: string; command?: string | null; pass_criteria?: string | null }>
@@ -598,6 +543,15 @@ function Section({
   )
 }
 
+/** 多行命令统一成单行展示：换行替换为英文分号 */
+function formatCommand(command: string): string {
+  return command
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(';')
+}
+
 function TroubleshootCard({ data }: { data: TroubleshootData }) {
   return (
     <div className="overflow-hidden rounded-lg border border-line bg-white">
@@ -644,7 +598,7 @@ function TroubleshootCard({ data }: { data: TroubleshootData }) {
                         <div className="mt-1.5 flex flex-wrap items-center gap-2">
                           {item.command ? (
                             <code className="rounded-md bg-[#f5f6f8] px-2 py-0.5 font-mono text-[11px] text-brand-strong">
-                              {item.command}
+                              {formatCommand(item.command)}
                             </code>
                           ) : null}
                           {item.pass_criteria ? (
@@ -700,6 +654,7 @@ function TroubleshootCard({ data }: { data: TroubleshootData }) {
 const STAGE_LABELS: Record<string, string> = {
   intent: '正在识别问题意图…',
   retrieval: '正在检索知识库…',
+  tool: '正在补查手册…',
   generation: '正在生成回答…',
 }
 
@@ -753,7 +708,7 @@ function PendingReply({ requestId }: { requestId?: string }) {
   )
 }
 
-function citationLabel(fileName?: string, snippet?: string): string {
+function citationLabel(fileName?: string | null, snippet?: string | null): string {
   const base = (fileName ?? '文档').replace(/\.[^.]+$/, '')
   const heading = snippet
     ?.split('\n')
@@ -780,7 +735,7 @@ function answerPlainText(message: ChatMessageView): string {
     lines.push('', '诊断步骤：')
     data.steps.forEach((item, index) => {
       const extra = [
-        item.command ? `命令：${item.command}` : '',
+        item.command ? `命令：${formatCommand(item.command)}` : '',
         item.pass_criteria ? `通过标准：${item.pass_criteria}` : '',
       ]
         .filter(Boolean)
@@ -1004,7 +959,7 @@ function ChatMessages({
                   </span>
                 ) : null}
               </div>
-              {message.pending ? (
+              {message.pending || (message.streaming && !message.content) ? (
                 <PendingReply requestId={message.requestId} />
               ) : message.clarifying ? (
                 <div className="rounded-lg border border-brand-line bg-brand-soft/60 px-3 py-2">
@@ -1028,18 +983,33 @@ function ChatMessages({
                         <TroubleshootCard data={data} />
                       </div>
                     )
-                  // 兜底：不是合法 JSON，按纯文本渲染
+                  // 兜底：不是合法 JSON，按普通文本渲染
                   return (
                     <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
                       {message.content}
                     </p>
                   )
                 })()
+              ) : message.mode === 'command' || message.mode === 'knowledge' ? (
+                <div className="rounded-lg border border-line bg-white px-3.5 py-3">
+                  <MarkdownContent content={message.content} variant="answer" />
+                </div>
               ) : (
                 <p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-ink-900">
                   {message.content}
                 </p>
               )}
+
+              {message.streaming ? (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-400">
+                  <span className="inline-block h-3 w-1 animate-pulse bg-brand-strong" />
+                  <span>
+                    {message.stage
+                      ? STAGE_LABELS[message.stage] ?? '正在生成回答…'
+                      : '正在生成回答…'}
+                  </span>
+                </div>
+              ) : null}
 
               {message.citations && message.citations.length > 0 ? (
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -1086,7 +1056,7 @@ function ChatMessages({
                 </div>
               ) : null}
 
-              {message.pending || message.clarifying ? null : (
+              {message.pending || message.clarifying || message.streaming ? null : (
                 <MessageActions
                   messageId={message.dbId}
                   initialFeedback={message.feedback}
@@ -1295,198 +1265,31 @@ export function ChatPage() {
   const [vendorsLoading, setVendorsLoading] = useState(true)
   const [kbStatus, setKbStatus] = useState<KnowledgeStatus>('checking')
   const [kbDetail, setKbDetail] = useState<string | null>(null)
-  const [messages, setMessages] = useState<ChatMessageView[]>([])
-  const [sessions, setSessions] = useState<ChatSessionDto[]>([])
-  const [sessionsLoading, setSessionsLoading] = useState(true)
-  const [sessionKeyword, setSessionKeyword] = useState('')
-  const [activeSessionId, setActiveSessionId] = useState<number | null>(() =>
-    readStoredSessionId(),
-  )
-  const [sending, setSending] = useState(false)
-  const [chatError, setChatError] = useState<string | null>(null)
-  const [intentNotice, setIntentNotice] = useState<string | null>(null)
-  const [clarify, setClarify] = useState<ChatClarifyDto | null>(null)
-  const [lastMode, setLastMode] = useState<ChatQuestionMode>('unknown')
   const messageListRef = useRef<HTMLDivElement | null>(null)
+  const {
+    messages,
+    sessions,
+    sessionsLoading,
+    sessionKeyword,
+    setSessionKeyword,
+    activeSessionId,
+    sending,
+    chatError,
+    intentNotice,
+    clarify,
+    lastMode,
+    handleSend,
+    handleSelectSession,
+    handleNewSession,
+    handleRenameSession,
+    handleDeleteSession,
+  } = useChatSession(vendor || null)
 
+  // 消息变化或进入等待态时保持滚动到底部
   useEffect(() => {
     const node = messageListRef.current
-    if (node) {
-      node.scrollTop = node.scrollHeight
-    }
+    if (node) node.scrollTop = node.scrollHeight
   }, [messages, sending])
-
-  useEffect(() => {
-    let cancelled = false
-    const keyword = sessionKeyword.trim()
-    // 输入停顿后再请求，避免逐字触发数据库模糊查询
-    const timer = window.setTimeout(
-      () => {
-        setSessionsLoading(true)
-        fetchChatSessions(keyword || undefined)
-          .then((items) => {
-            if (!cancelled) {
-              setSessions(items)
-              setChatError(null)
-            }
-          })
-          .catch(() => {
-            // 401 时 client 已清理登录态并跳转登录页，这里不再提示加载失败
-            if (!cancelled && readSession()) setChatError('会话列表加载失败')
-          })
-          .finally(() => {
-            if (!cancelled) setSessionsLoading(false)
-          })
-      },
-      keyword ? 300 : 0,
-    )
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [sessionKeyword])
-
-  useEffect(() => {
-    try {
-      if (activeSessionId) {
-        localStorage.setItem(SESSION_LS_KEY, String(activeSessionId))
-      } else {
-        localStorage.removeItem(SESSION_LS_KEY)
-      }
-    } catch {
-      // 隐私模式 / 配额满等场景下静默跳过
-    }
-  }, [activeSessionId])
-
-  useEffect(() => {
-    if (activeSessionId === null) return
-    let cancelled = false
-    fetchChatSession(activeSessionId)
-      .then((detail) => {
-        if (!cancelled) setMessages(detail.messages.map(toChatView))
-      })
-      .catch(() => {
-        // 会话已被删除或无权访问，回到新对话状态
-        if (!cancelled) {
-          setActiveSessionId(null)
-          setMessages([])
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [activeSessionId])
-
-  const handleSend = async (content: string, mode: ChatQuestionMode) => {
-    if (sending) return
-    const optimisticUserMessage: ChatMessageView = {
-      id: `temp-${Date.now()}`,
-      role: 'user',
-      content,
-    }
-    const pendingId = `pending-${Date.now()}`
-    const requestId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    setMessages((current) => [
-      ...current,
-      optimisticUserMessage,
-      { id: pendingId, role: 'assistant', content: '', pending: true, requestId },
-    ])
-    setSending(true)
-    setChatError(null)
-    setClarify(null)
-    setIntentNotice(null)
-    setLastMode(mode)
-    try {
-      const result = await sendChatMessage(
-        {
-          session_id: activeSessionId,
-          content,
-          mode,
-          vendor: vendor || null,
-        },
-        requestId,
-      )
-      setActiveSessionId(result.session.id)
-      setMessages((current) => [
-        ...current.filter(
-          (item) => item.id !== optimisticUserMessage.id && item.id !== pendingId,
-        ),
-        toChatView(result.user_message),
-        toChatView(result.assistant_message),
-      ])
-      setSessions((current) => [
-        result.session,
-        ...current.filter((item) => item.id !== result.session.id),
-      ])
-      setClarify(result.clarify)
-      if (
-        result.intent !== result.mode_selected &&
-        result.mode_selected !== 'unknown' &&
-        result.intent !== 'out_of_scope'
-      ) {
-        setIntentNotice(`已按「${MODE_LABELS[result.intent] ?? result.intent}」处理`)
-      }
-    } catch (error) {
-      // 保留用户提问，仅移除等待占位，避免用户以为消息丢失
-      setMessages((current) => current.filter((item) => item.id !== pendingId))
-      setChatError(error instanceof Error ? error.message : '发送失败')
-    } finally {
-      setSending(false)
-    }
-  }
-
-  const handleSelectSession = (sessionId: number) => {
-    if (sending || sessionId === activeSessionId) return
-    setChatError(null)
-    setClarify(null)
-    setIntentNotice(null)
-    setActiveSessionId(sessionId)
-  }
-
-  const handleNewSession = () => {
-    setActiveSessionId(null)
-    setMessages([])
-    setChatError(null)
-    setClarify(null)
-    setIntentNotice(null)
-    // 新对话默认不限定厂商
-    setVendor(ANY_VENDOR)
-  }
-
-  const handleRenameSession = async (sessionId: number, title: string) => {
-    try {
-      const updated = await renameChatSession(sessionId, title)
-      setSessions((current) =>
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      )
-      setChatError(null)
-    } catch (error) {
-      setChatError(error instanceof Error ? error.message : '重命名会话失败')
-    }
-  }
-
-  const handleDeleteSession = async (sessionId: number) => {
-    try {
-      await deleteChatSession(sessionId)
-      setSessions((current) => current.filter((item) => item.id !== sessionId))
-      if (sessionId === activeSessionId) {
-        setActiveSessionId(null)
-        setMessages([])
-      }
-      setChatError(null)
-    } catch (error) {
-      setChatError(error instanceof Error ? error.message : '删除会话失败')
-    }
-  }
-
-  useEffect(() => {
-    const container = messageListRef.current
-    if (!container) return
-    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
-  }, [messages])
 
   useEffect(() => {
     let cancelled = false

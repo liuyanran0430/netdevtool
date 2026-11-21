@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.models import ChatQuestionMode
+from app.rag.schema import QA_EVIDENCE_MAX_CHARS
 
 MAX_HISTORY_MESSAGES = 10
 
@@ -55,14 +56,23 @@ class TroubleshootAnswer(BaseModel):
 
 SYSTEM_PROMPTS: dict[str, str] = {
     ChatQuestionMode.command.value: (
-        "你是网络设备配置命令专家。根据给定的设备手册证据回答用户的命令查询。\n"
-        "输出结构：\n"
-        "1. 结论先行：直接给出命令语法（用代码块包裹）。\n"
-        "2. 参数说明：逐个说明关键参数及取值。\n"
-        "3. 配置示例：给出可直接参考的配置片段。\n"
-        "4. 注意事项：视图/模式要求、风险提示。\n"
-        "约束：只依据证据回答；证据不足时明确说明缺少哪个厂商/型号的手册，"
-        "不要凭空编造命令。涉及删除、重启等危险操作必须给出风险提示。"
+        "你是网络设备配置命令专家。根据给定的设备手册证据回答用户的命令查询，"
+        "输出必须是标准 GitHub Markdown，严格按以下四段：\n"
+        "## 配置命令\n"
+        "先用一句话说明用途，再给出一个 ```text 代码块（不超过 10 行），"
+        "每行一条命令，注释用 # 写在命令行末或上一行。\n"
+        "命令中的设备名、提示符、视图名必须原样保留证据中的写法，"
+        "不要统一改写设备名或提示符；证据未给出提示符时只写命令本身。\n"
+        "## 参数说明\n"
+        "三列表格：参数 | 取值 | 说明；不超过 8 行，单元格不超过 30 字，表格内不放代码块。\n"
+        "## 配置示例\n"
+        "按设备或场景用 ### 小标题分节，每节一个 ```text 代码块（不超过 15 行），"
+        "代码块后可补一句说明。\n"
+        "## 注意事项\n"
+        "3-5 条无序列表，每条不超过 50 字；风险条目用 **风险：** 开头；"
+        "证据不足时用一条说明缺少哪个厂商/型号的手册。\n"
+        "约束：只用 ## 和 ###，不要输出 # 一级标题；不要 HTML、图片或嵌套超过两层的列表；"
+        "不要复述证据原文；只依据证据回答，不要凭空编造命令。"
     ),
     ChatQuestionMode.troubleshoot.value: (
         "你是网络故障排查专家。根据给定的故障案例与手册证据，按以下 JSON 结构输出排查方案，"
@@ -93,6 +103,18 @@ SYSTEM_PROMPTS: dict[str, str] = {
     ),
 }
 
+FAULT_INVESTIGATION_PROMPT = (
+    "你是网络故障调查助手。当前任务不是给出最终结论，而是通过只读工具补充故障手册证据。\n"
+    "要求：\n"
+    "- 先判断现有证据是否覆盖故障现象；不足时调用 search_fault_cases，"
+    "换用故障手册中的专业术语重新检索；需要确认型号时可调用 get_device_info。\n"
+    "- 不要重复相同查询，最多两轮、每轮最多两个工具。\n"
+    "- 不要编造命令、现象或处置结论；工具无结果时如实说明。\n"
+    "- 最后用 3-5 条要点总结已查到的现象、可能原因方向与仍需确认的信息，"
+    "不要输出 JSON，不要给出最终排查方案。"
+)
+
+
 NO_EVIDENCE_REPLIES: dict[str, str] = {
     ChatQuestionMode.command.value: (
         "知识库中没有检索到与当前问题匹配的设备手册内容。"
@@ -109,7 +131,9 @@ NO_EVIDENCE_REPLIES: dict[str, str] = {
 }
 
 
-def render_evidence(evidences: list[Any], *, max_chars: int = 1200) -> str:
+def render_evidence(
+    evidences: list[Any], *, max_chars: int = QA_EVIDENCE_MAX_CHARS
+) -> str:
     """把证据列表渲染成带编号的文本块。"""
     if not evidences:
         return "（无检索证据）"
@@ -128,6 +152,8 @@ def build_qa_prompt(
     question: str,
     evidences: list[Any],
     history: list[tuple[str, str]] | None = None,
+    evidence_max_chars: int = QA_EVIDENCE_MAX_CHARS,
+    notes: str | None = None,
 ) -> list[dict[str, str]]:
     """组装问答消息：系统提示词 + 证据 + 最近历史 + 当前问题。"""
     system = SYSTEM_PROMPTS.get(mode, SYSTEM_PROMPTS[ChatQuestionMode.knowledge.value])
@@ -135,9 +161,18 @@ def build_qa_prompt(
         {"role": "system", "content": system},
         {
             "role": "system",
-            "content": "以下是本次检索到的知识库证据：\n\n" + render_evidence(evidences),
+            "content": "以下是本次检索到的知识库证据：\n\n"
+            + render_evidence(evidences, max_chars=evidence_max_chars),
         },
     ]
+    if notes:
+        messages.append(
+            {
+                "role": "system",
+                "content": "工具调查小结（仅辅助理解，不是证据，"
+                "不得作为 evidence_refs 引用）：\n" + notes,
+            }
+        )
     for role, content in (history or [])[-MAX_HISTORY_MESSAGES:]:
         messages.append(
             {"role": "user" if role == "user" else "assistant", "content": content}
@@ -146,7 +181,24 @@ def build_qa_prompt(
     return messages
 
 
-def no_evidence_reply(mode: str) -> str:
-    return NO_EVIDENCE_REPLIES.get(
-        mode, NO_EVIDENCE_REPLIES[ChatQuestionMode.knowledge.value]
+NO_EVIDENCE_REPLIES_WITH_VENDOR: dict[str, str] = {
+    ChatQuestionMode.command.value: (
+        "知识库中没有检索到与当前问题匹配的设备手册内容。"
+        "请补充设备型号，或换用更贴近手册的术语后重试。"
+    ),
+    ChatQuestionMode.troubleshoot.value: (
+        "知识库中没有检索到与该现象匹配的故障案例或手册内容。"
+        "请补充故障现象与影响范围，便于进一步定位。"
+    ),
+    ChatQuestionMode.knowledge.value: (
+        "知识库中没有检索到相关的企业文档内容。"
+        "如涉及本企业网络架构，请先上传对应架构文档；通用网络知识可直接细化问题。"
+    ),
+}
+
+
+def no_evidence_reply(mode: str, *, vendor_known: bool = False) -> str:
+    replies = (
+        NO_EVIDENCE_REPLIES_WITH_VENDOR if vendor_known else NO_EVIDENCE_REPLIES
     )
+    return replies.get(mode, replies[ChatQuestionMode.knowledge.value])
