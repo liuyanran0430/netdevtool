@@ -16,9 +16,9 @@ from app.translate_rule.registry import (
     reload_registry,
 )
 from app.translate_rule.renderer import (
-    RenderWarning,
     RenderedLine,
     Renderer,
+    RenderWarning,
     TranslationOutput,
 )
 

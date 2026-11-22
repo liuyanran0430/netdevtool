@@ -47,7 +47,7 @@ from app.rag.qa_prompts import (
     no_evidence_reply,
     render_evidence,
 )
-from app.rag.qa_retriever import retrieve_for_qa
+from app.rag.qa_retriever import dedupe_evidences, retrieve_for_qa
 from app.rag.schema import QA_EVIDENCE_MAX_CHARS
 from app.repositories.chat_repository import ChatRepository
 from app.services.ai_billing import llm_run
@@ -136,6 +136,12 @@ class PreparedTurn:
     trace_id: str
     outcome: ChatSendOutcome | None = None
     streaming_message: ChatMessage | None = None
+    started_at: float = field(default_factory=time.perf_counter)
+    tool_calls: int = 0
+    fallback: bool = False
+
+    def record_tool_call(self) -> None:
+        self.tool_calls += 1
 
 
 def _summarize_title(content: str) -> str:
@@ -283,7 +289,7 @@ def _clarify_options(db: Session, slots: list[str]) -> list[str]:
 def _add_citations(
     db: Session, *, message_id: int, evidences: list[Any]
 ) -> None:
-    for evidence in evidences:
+    for evidence in dedupe_evidences(evidences):
         db.add(
             ChatMessageCitation(
                 message_id=message_id,
@@ -470,6 +476,7 @@ def _generate_with_tools(
     deadline: float | None,
     vendor: str | None,
     trace_id: str,
+    on_tool_call: Callable[[], None] | None = None,
 ) -> tuple[str, list[Any], bool]:
     """工具循环：模型按需补查，最多 MAX_TOOL_ROUNDS 轮。
 
@@ -525,6 +532,8 @@ def _generate_with_tools(
                     )
                 )
                 continue
+            if on_tool_call is not None:
+                on_tool_call()
             result = executor.run(str(call.get("name") or ""), call.get("args") or {})
             if result.ok:
                 tool_ok = True
@@ -729,7 +738,7 @@ def _citations_payload(evidences: list[Any]) -> list[dict[str, Any]]:
             ),
             "snippet": getattr(item, "snippet", None),
         }
-        for item in evidences
+        for item in dedupe_evidences(evidences)
     ]
 
 
@@ -836,6 +845,7 @@ def _investigate_fault(
         messages.append(response)
         for call in calls[:MAX_TOOL_CALLS_PER_ROUND]:
             tool_call_id = str(call.get("id") or f"fault_{round_no}")
+            prepared.tool_calls = getattr(prepared, "tool_calls", 0) + 1
             result = executor.run(str(call.get("name") or ""), call.get("args") or {})
             messages.append(
                 ToolMessage(content=result.content, tool_call_id=tool_call_id)
@@ -864,8 +874,12 @@ def _generate_blocking(
                     answer_evidences, fault_notes = _investigate_fault(
                         prepared, deadline=deadline, usages=usages
                     )
-                except ToolsUnsupported as exc:
-                    logger.warning("故障排查工具不可用，跳过调查阶段：%s", exc)
+                except ToolsUnsupported:
+                    prepared.fallback = True
+                    logger.warning(
+                        "event=chat_generation_fallback reason=tools_unsupported stage=investigation session_id=%s",
+                        prepared.session.id,
+                    )
             if not answer_evidences:
                 return (
                     no_evidence_reply(
@@ -900,6 +914,7 @@ def _generate_blocking(
                 deadline=deadline,
                 vendor=prepared.effective_vendor,
                 trace_id=prepared.trace_id,
+                on_tool_call=prepared.record_tool_call,
             )
         else:
             answer = _generate_answer(
@@ -912,8 +927,12 @@ def _generate_blocking(
                 evidence_max_chars=QA_EVIDENCE_MAX_CHARS,
             )
             tool_supplied = False
-    except ToolsUnsupported as exc:
-        logger.warning("模型不支持工具调用，回退普通生成：%s", exc)
+    except ToolsUnsupported:
+        prepared.fallback = True
+        logger.warning(
+            "event=chat_generation_fallback reason=tools_unsupported stage=generation session_id=%s",
+            prepared.session.id,
+        )
         if not retrieval.evidences:
             answer = no_evidence_reply(
                 prepared.intent.mode,
@@ -936,6 +955,11 @@ def _generate_blocking(
     except LLMError as exc:
         if exc.kind != LLMErrorKind.context_length:
             raise
+        prepared.fallback = True
+        logger.warning(
+            "event=chat_generation_fallback reason=context_length session_id=%s",
+            prepared.session.id,
+        )
         answer = _generate_answer(
             mode=prepared.intent.mode,
             question=prepared.question,
@@ -959,6 +983,34 @@ def _generate_blocking(
     return answer, answer_evidences
 
 
+def _log_chat_completed(prepared: PreparedTurn, evidences: list[Any]) -> None:
+    """成功回答仅保留一条不含问题、回答和证据正文的汇总。"""
+    retrieval = getattr(prepared, "retrieval", None)
+    trace = getattr(retrieval, "trace", None) or {}
+    intent_reason = str(getattr(prepared.intent, "reason", "") or "")
+    fallback = bool(
+        getattr(prepared, "fallback", False)
+        or trace.get("status") == "rerank_degraded"
+        or intent_reason.startswith("意图识别降级")
+    )
+    logger.info(
+        "event=chat_completed session_id=%s mode=%s vendor=%s evidence_count=%d tool_calls=%d latency_ms=%d fallback=%s",
+        prepared.session.id,
+        prepared.intent.mode,
+        getattr(prepared, "effective_vendor", None) or "all",
+        len(dedupe_evidences(evidences)),
+        getattr(prepared, "tool_calls", 0),
+        int(
+            (
+                time.perf_counter()
+                - getattr(prepared, "started_at", time.perf_counter())
+            )
+            * 1000
+        ),
+        str(fallback).lower(),
+    )
+
+
 def stream_turn_events(prepared: PreparedTurn) -> Iterator[dict[str, Any]]:
     """SSE 事件流：meta / stage / delta / result / citations / done / error。"""
     assistant = prepared.streaming_message or (
@@ -979,6 +1031,7 @@ def stream_turn_events(prepared: PreparedTurn) -> Iterator[dict[str, Any]]:
 
     if prepared.outcome is not None:
         yield {"event": "delta", "data": {"text": assistant.content}}
+        _log_chat_completed(prepared, [])
         yield {
             "event": "done",
             "data": {
@@ -1020,6 +1073,7 @@ def stream_turn_events(prepared: PreparedTurn) -> Iterator[dict[str, Any]]:
                 "event": "citations",
                 "data": _citations_payload(answer_evidences),
             }
+            _log_chat_completed(prepared, answer_evidences)
             yield {
                 "event": "done",
                 "data": {
@@ -1050,6 +1104,7 @@ def stream_turn_events(prepared: PreparedTurn) -> Iterator[dict[str, Any]]:
                 "event": "citations",
                 "data": _citations_payload(answer_evidences),
             }
+            _log_chat_completed(prepared, answer_evidences)
             yield {
                 "event": "done",
                 "data": {
@@ -1096,6 +1151,7 @@ def stream_turn_events(prepared: PreparedTurn) -> Iterator[dict[str, Any]]:
             "event": "citations",
             "data": _citations_payload(retrieval.evidences),
         }
+        _log_chat_completed(prepared, retrieval.evidences)
         yield {
             "event": "done",
             "data": {

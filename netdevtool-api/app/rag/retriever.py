@@ -225,7 +225,14 @@ def retrieve_candidate_references(
                 except Exception as exc:  # noqa: BLE001  外部向量服务异常统一留痕
                     recall_errors["sparse"] = str(exc)[:500]
     except Exception as exc:  # noqa: BLE001  Qdrant 不可用时保持原候选生成流程
-        logger.warning("候选 RAG 连接失败：%s", exc)
+        logger.warning(
+            "event=candidate_rag_degraded stage=connect kb_id=%s vendor=%s model=%s trace_id=%s error=%s",
+            base.id,
+            target_vendor,
+            target_model,
+            trace_id or "-",
+            str(exc)[:300],
+        )
         trace.update(status="failed", reason="qdrant_unavailable", error=str(exc)[:500])
         return CandidateRAGResult([], trace)
 
@@ -233,7 +240,14 @@ def retrieve_candidate_references(
     trace["sparse_count"] = len(sparse_points)
     if recall_errors:
         trace["recall_errors"] = recall_errors
-        logger.warning("候选 RAG 部分召回失败：%s", recall_errors)
+        logger.warning(
+            "event=candidate_rag_degraded stage=recall kb_id=%s vendor=%s model=%s trace_id=%s errors=%s",
+            base.id,
+            target_vendor,
+            target_model,
+            trace_id or "-",
+            recall_errors,
+        )
     if not dense_points and not sparse_points:
         trace.update(
             status="failed" if recall_errors else "no_recall",
@@ -280,7 +294,14 @@ def retrieve_candidate_references(
         if not references:
             trace.update(status="below_threshold", reason="rerank_score_below_threshold")
     except RerankError as exc:
-        logger.warning("候选 RAG Rerank 降级：%s", exc)
+        logger.warning(
+            "event=candidate_rag_degraded stage=rerank kb_id=%s vendor=%s model=%s trace_id=%s error=%s",
+            base.id,
+            target_vendor,
+            target_model,
+            trace_id or "-",
+            str(exc)[:300],
+        )
         references = [
             _reference(
                 recall,

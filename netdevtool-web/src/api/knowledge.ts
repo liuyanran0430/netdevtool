@@ -145,7 +145,17 @@ export interface KnowledgeDocumentDto {
 
 export interface KnowledgeDocumentListDto {
   items: KnowledgeDocumentDto[]
+  total: number
+  indexed_count: number
   processing_count: number
+}
+
+export interface KnowledgeDocumentListQuery {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  status?: KnowledgeDocumentStatus
+  fileType?: 'pdf' | 'yaml' | 'excel' | 'markdown'
 }
 
 export interface KnowledgeDocumentUploadItemDto {
@@ -155,12 +165,20 @@ export interface KnowledgeDocumentUploadItemDto {
   error: string | null
 }
 
-/** 查询知识库文档列表。 */
+/** 分页查询知识库文档列表。 */
 export async function fetchKnowledgeDocuments(
   kbId: number,
+  query: KnowledgeDocumentListQuery = {},
 ): Promise<KnowledgeDocumentListDto> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    page_size: String(query.pageSize ?? 20),
+  })
+  if (query.keyword) params.set('keyword', query.keyword)
+  if (query.status) params.set('status', query.status)
+  if (query.fileType) params.set('file_type', query.fileType)
   const response = await fetch(
-    `${API_BASE}/api/v1/knowledge/bases/${kbId}/documents`,
+    `${API_BASE}/api/v1/knowledge/bases/${kbId}/documents?${params.toString()}`,
     { headers: authHeaders() },
   )
   if (!response.ok) throw await toRequestError(response, '加载文档列表失败')

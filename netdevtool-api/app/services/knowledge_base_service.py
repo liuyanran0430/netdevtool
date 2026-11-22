@@ -7,7 +7,6 @@ from app.rag.qdrant_store import ping_qdrant
 from app.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from app.schemas import KnowledgeBaseConfigUpdate
 
-
 # 迁移前的兼容规则：仅当 kb_type 为空时兜底，正常情况一律以库字段为准
 _STORE_RULES: tuple[tuple[str, KnowledgeBaseType], ...] = (
     ("troubleshooting", KnowledgeBaseType.troubleshooting),

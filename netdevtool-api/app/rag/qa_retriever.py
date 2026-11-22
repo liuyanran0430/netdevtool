@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,8 @@ _RECALL_LIMIT = 30
 _RERANK_DOCUMENT_MAX_CHARS = 2000
 _RRF_K = 60
 _DEFAULT_SEMANTIC_WEIGHT = 50
+# 片段长度达到该值才按文本去重，避免把极短的通用行误合并
+_EVIDENCE_TEXT_KEY_MIN = 20
 
 # 各意图类型对应的知识库类型：库级严格一一对应，决定扫描哪些库
 MODE_KB_TYPES: dict[str, set[str]] = {
@@ -280,7 +283,9 @@ def retrieve_for_qa(
             thresholds={str(kb_id): value for kb_id, value in thresholds.items()},
             rerank_top=scores[0].score if scores else 0.0,
         )
-        evidences = [_evidence(filtered[item.index], item.score) for item in selected]
+        evidences = dedupe_evidences(
+            [_evidence(filtered[item.index], item.score) for item in selected]
+        )
         top_score = float(scores[0].score) if scores else 0.0
         if not evidences:
             trace.update(status="below_threshold")
@@ -288,7 +293,9 @@ def retrieve_for_qa(
     except RerankError as exc:
         # Rerank 未配置或失败：退化为加权 RRF 排序，分数不可与阈值直接比较
         trace.update(status="rerank_degraded", rerank_error=str(exc)[:300])
-        evidences = [_evidence(item, item.score) for item in filtered[:top_k]]
+        evidences = dedupe_evidences(
+            [_evidence(item, item.score) for item in filtered[:top_k]]
+        )
         return QaRetrievalResult(
             evidences=evidences,
             top_score=evidences[0].score if evidences else 0.0,
@@ -308,3 +315,24 @@ def _evidence(recall: _Recall, score: float) -> QaEvidence:
         score=round(float(score), 6),
         text=text[:QA_EVIDENCE_MAX_CHARS],
     )
+
+
+def dedupe_evidences(evidences: list[QaEvidence]) -> list[QaEvidence]:
+    """按命中片段文本去重，保留分数更高的前序结果。
+
+    父子分块下同一父块的不同子块会命中相同片段，展示时只保留一条。
+    """
+    deduped: list[QaEvidence] = []
+    seen: set[str] = set()
+    for item in evidences:
+        text = re.sub(r"\s+", " ", item.text or "").strip()
+        key = (
+            f"text:{text}"
+            if len(text) >= _EVIDENCE_TEXT_KEY_MIN
+            else f"point:{item.doc_id}:{item.point_id}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped

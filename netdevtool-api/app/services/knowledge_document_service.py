@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -193,7 +194,37 @@ def upload_documents(
         )
         try:
             document = repository.create(document)
-        except Exception as exc:  # noqa: BLE001  唯一约束等数据库错误
+        except IntegrityError:
+            # 并发上传时由唯一约束最终仲裁，回滚后返回已存在的文档。
+            db.rollback()
+            target.unlink(missing_ok=True)
+            duplicated = repository.find_by_hash(kb_id, file_hash)
+            if duplicated is not None:
+                results.append(
+                    {
+                        "file_name": original_name,
+                        "result": "duplicated",
+                        "doc": duplicated,
+                        "error": None,
+                    }
+                )
+                continue
+            same_name = repository.find_by_name(kb_id, original_name)
+            results.append(
+                {
+                    "file_name": original_name,
+                    "result": "failed",
+                    "doc": None,
+                    "error": (
+                        "同名文件已存在"
+                        if same_name is not None
+                        else "文档记录创建失败：唯一约束冲突"
+                    ),
+                }
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001  数据库错误不阻断本批次其余文件
+            db.rollback()
             target.unlink(missing_ok=True)
             results.append(
                 {
@@ -232,19 +263,34 @@ def list_documents(
     status: KnowledgeDocumentStatus | None = None,
     file_type: KnowledgeDocumentFileType | None = None,
     keyword: str | None = None,
-) -> tuple[list[KnowledgeDocument], int]:
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[KnowledgeDocument], int, int, int]:
+    """分页查询文档，返回（当前页文档, 总数, 已索引数, 处理中数量）。"""
     if KnowledgeBaseRepository(db).get(kb_id) is None:
         raise KnowledgeBaseNotFound("知识库不存在")
+    page = max(page, 1)
+    page_size = max(page_size, 1)
     repository = KnowledgeDocumentRepository(db)
-    items = repository.list_by_base(kb_id)
-    if status is not None:
-        items = [item for item in items if item.status == status]
-    if file_type is not None:
-        items = [item for item in items if item.file_type == file_type]
-    if keyword:
-        lowered = keyword.lower()
-        items = [item for item in items if lowered in item.file_name.lower()]
-    return items, repository.count_processing(kb_id)
+    items = repository.list_by_base(
+        kb_id,
+        status=status,
+        file_type=file_type,
+        keyword=keyword,
+        offset=(page - 1) * page_size,
+        limit=page_size,
+    )
+    total = repository.count_by_base(
+        kb_id, status=status, file_type=file_type, keyword=keyword
+    )
+    # 已索引数量忽略状态筛选，避免筛选“失败”时恒为 0
+    indexed = repository.count_by_base(
+        kb_id,
+        status=KnowledgeDocumentStatus.indexed,
+        file_type=file_type,
+        keyword=keyword,
+    )
+    return items, total, indexed, repository.count_processing(kb_id)
 
 
 def delete_document(db: Session, doc_id: int) -> None:
@@ -359,40 +405,31 @@ def _to_chunking_config(base: KnowledgeBase) -> ChunkingConfig:
 
 def run_index_task(doc_id: int) -> None:
     """Celery 执行入口：解析、切块、编码并写入 Qdrant。"""
+    started = time.perf_counter()
     with SessionLocal() as db:
         repository = KnowledgeDocumentRepository(db)
+        if not repository.claim_for_index(doc_id):
+            logger.debug("event=index_skipped reason=already_claimed doc_id=%s", doc_id)
+            return
         document = repository.get(doc_id)
         if document is None:
-            logger.warning("知识库文档不存在，跳过索引：doc_id=%s", doc_id)
+            logger.warning("event=index_skipped reason=document_not_found doc_id=%s", doc_id)
             return
-        if document.status not in {
-            KnowledgeDocumentStatus.pending,
-            KnowledgeDocumentStatus.failed,
-            KnowledgeDocumentStatus.needmanual,
-        }:
-            logger.info(
-                "知识库文档状态为 %s，跳过索引：doc_id=%s",
-                document.status.value,
-                doc_id,
-            )
-            return
-        logger.info("开始索引知识库文档：doc_id=%s", doc_id)
 
         base = KnowledgeBaseRepository(db).get(document.kb_id)
+        logger.info(
+            "event=index_started doc_id=%s kb_id=%s", doc_id, document.kb_id
+        )
         if base is None:
             document.status = KnowledgeDocumentStatus.failed
             document.error_message = "所属知识库不存在"
             repository.update(document)
+            logger.error(
+                "event=index_failed reason=knowledge_base_not_found doc_id=%s kb_id=%s",
+                doc_id,
+                document.kb_id,
+            )
             return
-
-        document.status = KnowledgeDocumentStatus.processing
-        document.stage = KnowledgeDocumentStage.parsing
-        document.progress = 0
-        document.total_chunks = None
-        document.processed_chunks = 0
-        document.chunk_count = None
-        document.error_message = None
-        repository.update(document)
 
         last_write = 0.0
 
@@ -435,12 +472,31 @@ def run_index_task(doc_id: int) -> None:
             document.processed_chunks = result.chunk_count
             document.error_message = None
             repository.update(document)
+            logger.info(
+                "event=index_completed doc_id=%s kb_id=%s chunks=%d duration_ms=%d",
+                doc_id,
+                document.kb_id,
+                result.chunk_count,
+                int((time.perf_counter() - started) * 1000),
+            )
         except NeedManualError as exc:
             document.status = KnowledgeDocumentStatus.needmanual
             document.error_message = str(exc)[:1024]
             repository.update(document)
+            logger.warning(
+                "event=index_needmanual doc_id=%s kb_id=%s duration_ms=%d reason=%s",
+                doc_id,
+                document.kb_id,
+                int((time.perf_counter() - started) * 1000),
+                str(exc)[:300],
+            )
         except Exception as exc:  # noqa: BLE001  任务失败统一落库
-            logger.exception("知识库文档索引失败：doc_id=%s", doc_id)
+            logger.exception(
+                "event=index_failed doc_id=%s kb_id=%s duration_ms=%d",
+                doc_id,
+                document.kb_id,
+                int((time.perf_counter() - started) * 1000),
+            )
             document.status = KnowledgeDocumentStatus.failed
             document.error_message = str(exc)[:1024]
             repository.update(document)

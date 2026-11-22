@@ -908,6 +908,29 @@
             }
           },
           {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
@@ -3432,6 +3455,14 @@
             "type": "array",
             "title": "Items"
           },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "indexed_count": {
+            "type": "integer",
+            "title": "Indexed Count"
+          },
           "processing_count": {
             "type": "integer",
             "title": "Processing Count"
@@ -3440,10 +3471,12 @@
         "type": "object",
         "required": [
           "items",
+          "total",
+          "indexed_count",
           "processing_count"
         ],
         "title": "KnowledgeDocumentListOut",
-        "description": "知识库文档列表与处理中数量。"
+        "description": "知识库文档列表与统计信息。"
       },
       "KnowledgeDocumentMetadataBatchUpdate": {
         "properties": {

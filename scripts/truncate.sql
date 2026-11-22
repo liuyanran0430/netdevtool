@@ -1,0 +1,12 @@
+TRUNCATE TABLE ai_runs; 
+TRUNCATE TABLE chat_message_citations;
+TRUNCATE TABLE chat_message_feedbacks;
+SET FOREIGN_KEY_CHECKS = 0;
+TRUNCATE TABLE chat_messages;
+TRUNCATE TABLE chat_sessions;
+TRUNCATE TABLE knowledge_gaps;
+SET FOREIGN_KEY_CHECKS = 1;
+TRUNCATE TABLE review_decisions;
+TRUNCATE TABLE review_items;
+TRUNCATE TABLE supplement_candidates;
+TRUNCATE TABLE translation_tasks;

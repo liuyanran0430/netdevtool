@@ -45,25 +45,35 @@ class ToolExecutor:
     def run(self, name: str, args: dict[str, Any]) -> ToolResult:
         spec = self._specs.get(name)
         if spec is None:
-            logger.warning("未知工具调用：%s", name)
+            logger.warning("event=tool_unknown name=%s", name)
             return ToolResult(ERROR_UNKNOWN, ok=False)
         if not isinstance(args, dict):
+            logger.debug("event=tool_invalid_arguments name=%s reason=not_object", name)
             return ToolResult(ERROR_INVALID_ARGS, ok=False)
         try:
             parsed = spec.args_model.model_validate(args)
         except ValidationError as exc:
-            logger.info("工具参数不合法 name=%s errors=%s", name, exc.errors()[:2])
+            errors = [
+                {"loc": item["loc"], "type": item["type"]}
+                for item in exc.errors()[:2]
+            ]
+            logger.debug(
+                "event=tool_invalid_arguments name=%s errors=%s", name, errors
+            )
             return ToolResult(ERROR_INVALID_ARGS, ok=False)
 
         started = time.perf_counter()
         try:
             result = spec.handler(parsed)
         except Exception:  # noqa: BLE001 工具异常不能打断问答
-            logger.exception("工具执行失败 name=%s", name)
+            logger.exception("event=tool_failed name=%s", name)
             return ToolResult(ERROR_EXECUTION, ok=False)
         latency = int((time.perf_counter() - started) * 1000)
-        logger.info(
-            "tool=%s latency=%dms evidences=%d", name, latency, len(result.evidences)
+        logger.debug(
+            "event=tool_completed name=%s latency_ms=%d evidence_count=%d",
+            name,
+            latency,
+            len(result.evidences),
         )
         content = (result.content or "").strip()[: spec.max_chars]
         return replace(result, content=content or "未查询到相关内容。")

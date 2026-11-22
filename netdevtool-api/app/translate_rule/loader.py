@@ -72,7 +72,7 @@ def load_knowledge(base_dir: str | Path | None = None) -> LoadResult:
     result.warnings = warnings
 
     logger.info(
-        "知识库加载完成：entities=%d implementations=%d profiles=%d interfaces=%d skipped=%d warnings=%d",
+        "event=knowledge_loaded entities=%d implementations=%d profiles=%d interfaces=%d skipped=%d warnings=%d",
         len(result.entities),
         len(result.implementations),
         len(result.profiles),
@@ -80,10 +80,14 @@ def load_knowledge(base_dir: str | Path | None = None) -> LoadResult:
         len(result.skipped),
         len(result.warnings),
     )
-    for message in result.skipped:
-        logger.warning("知识库跳过：%s", message)
-    for message in result.warnings:
-        logger.warning("知识库告警：%s", message)
+    issues = result.skipped + result.warnings
+    if issues:
+        logger.warning(
+            "event=knowledge_load_issues skipped=%d warnings=%d examples=%s",
+            len(result.skipped),
+            len(result.warnings),
+            " | ".join(issue[:300] for issue in issues[:3]),
+        )
     return result
 
 

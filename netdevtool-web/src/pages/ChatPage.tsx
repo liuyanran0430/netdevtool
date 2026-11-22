@@ -37,6 +37,7 @@ import { fetchDevices } from '../api/devices'
 import { fetchKnowledgeStatus } from '../api/knowledge'
 import { useChatSession } from '../hooks/useChatSession'
 import type { ChatMessageView } from '../lib/chat'
+import type { ChatCitationDto } from '../api/chat'
 
 const VENDOR_LS_KEY = 'chat:vendor'
 /** 不限厂商：检索与问答不按厂商收窄，数据库按 all 保存 */
@@ -719,6 +720,21 @@ function citationLabel(fileName?: string | null, snippet?: string | null): strin
   return `${base}·${title}`
 }
 
+/** 历史消息里可能存有重复引用，展示前按片段文本去重 */
+function dedupeCitations(citations: ChatCitationDto[]): ChatCitationDto[] {
+  const seen = new Set<string>()
+  return citations.filter((item) => {
+    const text = (item.snippet ?? '').replace(/\s+/g, ' ').trim()
+    const key =
+      text.length >= 20
+        ? `text:${text}`
+        : `doc:${item.doc_id ?? ''}:${item.file_name ?? ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 /** 复制时使用的纯文本：故障排查的结构化 JSON 转成可读文本 */
 function answerPlainText(message: ChatMessageView): string {
   if (message.mode !== 'troubleshoot') return message.content
@@ -1014,7 +1030,7 @@ function ChatMessages({
               {message.citations && message.citations.length > 0 ? (
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   <span className="text-[11px] text-ink-400">参考来源</span>
-                  {message.citations.map((citation, index) => (
+                  {dedupeCitations(message.citations).map((citation, index) => (
                     <span
                       key={`${citation.doc_id ?? 'doc'}-${index}`}
                       className="inline-flex max-w-[280px] items-center gap-1 rounded-md border border-line bg-white px-2 py-1 text-[11px] text-ink-500"

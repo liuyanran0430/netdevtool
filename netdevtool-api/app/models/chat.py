@@ -3,12 +3,12 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     SmallInteger,
     String,

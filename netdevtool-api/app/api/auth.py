@@ -1,6 +1,6 @@
 """登录认证路由。"""
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
 
 from app.api.deps import bearer_token, get_current_user

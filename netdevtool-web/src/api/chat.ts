@@ -1,4 +1,5 @@
 import { API_BASE, authHeaders, toRequestError } from './client'
+import { logger } from '../lib/logger'
 
 export type ChatRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'streaming' | 'completed' | 'clarifying' | 'failed'
@@ -168,11 +169,19 @@ export async function streamChatMessage(
   if (!response.ok) throw await toRequestError(response, '发送消息失败')
   if (!response.body) throw new Error('浏览器不支持流式响应')
 
+  let loggedInvalidFrame = false
   for await (const frame of readSse(response.body)) {
     let data: any
     try {
       data = JSON.parse(frame.data)
-    } catch {
+    } catch (error) {
+      if (!loggedInvalidFrame) {
+        logger.warn('chat.sse_parse_failed', {
+          request_id: requestId,
+          error_type: error instanceof Error ? error.name : 'UnknownError',
+        })
+        loggedInvalidFrame = true
+      }
       continue
     }
     switch (frame.event) {

@@ -1,4 +1,5 @@
 import { clearSession, readSession } from '../auth/session'
+import { logger } from '../lib/logger'
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8083'
 
@@ -15,6 +16,13 @@ export async function toRequestError(response: Response, action: string): Promis
     if (!window.location.pathname.startsWith('/login')) {
       window.location.assign('/login')
     }
+  }
+  if (response.status >= 500) {
+    logger.error('api.http_error', {
+      action,
+      status: response.status,
+      path: new URL(response.url).pathname,
+    })
   }
   const body = (await response.json().catch(() => null)) as { message?: string } | null
   return new Error(body?.message ?? `${action}：${response.status}`)

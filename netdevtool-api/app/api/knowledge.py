@@ -124,21 +124,29 @@ def list_knowledge_documents(
     status_filter: KnowledgeDocumentStatus | None = Query(default=None, alias="status"),
     file_type: KnowledgeDocumentFileType | None = None,
     keyword: str | None = Query(default=None, max_length=128),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ) -> KnowledgeDocumentListOut:
     try:
-        items, processing_count = knowledge_document_service.list_documents(
-            db,
-            base_id,
-            status=status_filter,
-            file_type=file_type,
-            keyword=keyword,
+        items, total, indexed_count, processing_count = (
+            knowledge_document_service.list_documents(
+                db,
+                base_id,
+                status=status_filter,
+                file_type=file_type,
+                keyword=keyword,
+                page=page,
+                page_size=page_size,
+            )
         )
     except knowledge_document_service.KnowledgeBaseNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return KnowledgeDocumentListOut(
         items=[KnowledgeDocumentOut.model_validate(item) for item in items],
+        total=total,
+        indexed_count=indexed_count,
         processing_count=processing_count,
     )
 

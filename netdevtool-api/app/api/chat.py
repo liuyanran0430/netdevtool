@@ -1,6 +1,7 @@
 """智能问答会话路由：会话列表、详情与消息发送。"""
 
 import json
+import time
 from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -156,6 +157,7 @@ def stream_chat_message(
     user: User = Depends(get_current_user),
     request_id: str | None = Header(default=None, alias="X-Chat-Request-Id"),
 ) -> StreamingResponse:
+    started = time.perf_counter()
     try:
         prepared = chat_service.prepare_stream_turn(
             db,
@@ -173,6 +175,8 @@ def stream_chat_message(
     except Exception:
         chat_progress.clear_stage(request_id)
         raise
+
+    prepared.started_at = started
 
     def events() -> Iterator[str]:
         try:

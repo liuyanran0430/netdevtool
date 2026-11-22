@@ -3,12 +3,12 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     SmallInteger,
     String,
@@ -209,13 +209,14 @@ class KnowledgeDocumentStage(str, Enum):
 class KnowledgeDocument(Base):
     """知识库文档表：记录文档来源、切分结果与索引状态。
 
-    文档按知识库隔离，同一知识库内文件名唯一；`file_hash` 用于重复文件识别，
+    文档按知识库隔离，同一知识库内文件名与文件内容 hash 均唯一；
     `metadata_json` 存放切块时附着到每个块的扩展元数据。
     """
 
     __tablename__ = "knowledge_documents"
     __table_args__ = (
         UniqueConstraint("kb_id", "file_name", name="uq_knowledge_documents_kb_file"),
+        UniqueConstraint("kb_id", "file_hash", name="uq_knowledge_documents_kb_hash"),
         Index("ix_knowledge_documents_kb_status", "kb_id", "status"),
         Index("ix_knowledge_documents_hash", "file_hash"),
     )

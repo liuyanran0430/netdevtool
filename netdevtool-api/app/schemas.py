@@ -3,8 +3,8 @@
 前端类型由 /openapi.json 生成，此处定义的模型即前后端契约。
 """
 
-from typing import Any, Literal
 from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -152,9 +152,11 @@ class KnowledgeDocumentUploadResult(BaseModel):
 
 
 class KnowledgeDocumentListOut(BaseModel):
-    """知识库文档列表与处理中数量。"""
+    """知识库文档列表与统计信息。"""
 
     items: list[KnowledgeDocumentOut]
+    total: int
+    indexed_count: int
     processing_count: int
 
 

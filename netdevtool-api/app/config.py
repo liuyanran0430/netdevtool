@@ -4,8 +4,10 @@
 """
 
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import quote_plus
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +22,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "NetDevTool API"
     APP_ENV: str = "local"
     DEBUG: bool = True
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_MAX_SIZE_MB: int = Field(default=10, gt=0)
+    LOG_BACKUP_COUNT: int = Field(default=5, gt=0)
     API_V1_PREFIX: str = "/api/v1"
 
     # MySQL

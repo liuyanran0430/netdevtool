@@ -44,6 +44,7 @@ import type {
   KnowledgeBaseDto,
   KnowledgeDocumentDto,
   KnowledgeDocumentStage,
+  KnowledgeDocumentStatus,
 } from '../api/knowledge'
 import { PageHeader } from '../components/PageHeader'
 import { StatusTag } from '../components/StatusTag'
@@ -356,6 +357,15 @@ const FILE_TYPE_LABEL: Record<DocRow['type'], string> = {
   MD: 'Markdown',
 }
 
+/* 列表筛选值 → 后端 file_type 参数 */
+const FILE_TYPE_QUERY: Record<DocRow['type'], 'pdf' | 'yaml' | 'excel' | 'markdown'> =
+  {
+    PDF: 'pdf',
+    YML: 'yaml',
+    XLS: 'excel',
+    MD: 'markdown',
+  }
+
 function toDocRow(dto: KnowledgeDocumentDto): DocRow {
   const metadata = dto.metadata_json ?? {}
   const metadataPairs = Object.fromEntries(
@@ -386,23 +396,65 @@ function toDocRow(dto: KnowledgeDocumentDto): DocRow {
 function useKnowledgeDocs(kbId: number | null) {
   const [docs, setDocs] = useState<DocRow[]>([])
   const [loading, setLoading] = useState(false)
-  const [search, setSearch] = useState('')
-  const [typeFilter, setTypeFilter] = useState<string | undefined>()
-  const [statusFilter, setStatusFilter] = useState<string | undefined>()
+  const [search, setSearchValue] = useState('')
+  const [keyword, setKeyword] = useState('')
+  const [typeFilter, setTypeFilterValue] = useState<string | undefined>()
+  const [statusFilter, setStatusFilterValue] = useState<string | undefined>()
   const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [indexedCount, setIndexedCount] = useState(0)
+  const [processingCount, setProcessingCount] = useState(0)
   const [selected, setSelected] = useState<string[]>([])
+
+  // 搜索输入防抖，避免每次按键都请求后端
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setKeyword(search.trim())
+      setPage(1)
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  // 切换知识库时清空选择并回到第一页
+  const loadedKbRef = useRef<number | null>(null)
 
   const reload = useCallback(
     async (showError = true) => {
       if (kbId == null) {
+        loadedKbRef.current = null
         setDocs([])
+        setTotal(0)
+        setIndexedCount(0)
+        setProcessingCount(0)
         return
+      }
+      if (loadedKbRef.current !== kbId) {
+        loadedKbRef.current = kbId
+        setSelected([])
+        if (page !== 1) {
+          setPage(1)
+          return
+        }
       }
       setLoading(true)
       try {
-        const data = await fetchKnowledgeDocuments(kbId)
+        const data = await fetchKnowledgeDocuments(kbId, {
+          page,
+          pageSize,
+          keyword: keyword || undefined,
+          status: statusFilter as KnowledgeDocumentStatus | undefined,
+          fileType: typeFilter
+            ? FILE_TYPE_QUERY[typeFilter as DocRow['type']]
+            : undefined,
+        })
         setDocs(data.items.map(toDocRow))
+        setTotal(data.total)
+        setIndexedCount(data.indexed_count)
+        setProcessingCount(data.processing_count)
+        // 删除或筛选后当前页可能越界，回到最后一页重新拉取
+        const lastPage = Math.max(1, Math.ceil(data.total / pageSize))
+        if (page > lastPage) setPage(lastPage)
       } catch (error) {
         if (showError) {
           message.error(
@@ -413,48 +465,42 @@ function useKnowledgeDocs(kbId: number | null) {
         setLoading(false)
       }
     },
-    [kbId],
+    [kbId, page, pageSize, keyword, typeFilter, statusFilter],
   )
 
   useEffect(() => {
     // 异步执行，避免在 effect 内同步触发额外渲染
     void (async () => {
-      setSelected([])
-      setPage(1)
       await reload()
     })()
   }, [reload])
 
-  const hasProcessing = useMemo(
-    () =>
-      docs.some(
-        (doc) => doc.status === 'pending' || doc.status === 'processing',
-      ),
-    [docs],
-  )
-
   useEffect(() => {
-    if (!hasProcessing || kbId == null) return
+    if (!processingCount || kbId == null) return
     const timer = window.setInterval(() => {
       void reload(false)
     }, 2500)
     return () => window.clearInterval(timer)
-  }, [hasProcessing, kbId, reload])
+  }, [processingCount, kbId, reload])
 
-  const filtered = useMemo(() => {
-    return docs.filter((d) => {
-      if (search && !d.fileName.toLowerCase().includes(search.toLowerCase()))
-        return false
-      if (typeFilter && d.type !== typeFilter) return false
-      if (statusFilter && d.status !== statusFilter) return false
-      return true
-    })
-  }, [docs, search, typeFilter, statusFilter])
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  // 服务端已分页，docs 就是当前页数据
+  const paged = docs
 
-  const paged = useMemo(() => {
-    const start = (page - 1) * pageSize
-    return filtered.slice(start, start + pageSize)
-  }, [filtered, page, pageSize])
+  const setSearch = (value: string) => {
+    setSearchValue(value)
+    setPage(1)
+  }
+
+  const setTypeFilter = (value: string | undefined) => {
+    setTypeFilterValue(value)
+    setPage(1)
+  }
+
+  const setStatusFilter = (value: string | undefined) => {
+    setStatusFilterValue(value)
+    setPage(1)
+  }
 
   const toggleRow = (id: string) => {
     setSelected((prev) =>
@@ -537,8 +583,10 @@ function useKnowledgeDocs(kbId: number | null) {
     setPageSize,
     selected,
     setSelected,
-    filtered,
     paged,
+    total,
+    indexedCount,
+    totalPages,
     toggleRow,
     toggleAll,
     retry,
@@ -1425,8 +1473,9 @@ function DocListSection({
   kbName: string
 }) {
   const {
-    filtered,
     paged,
+    total,
+    totalPages,
     page,
     setPage,
     pageSize,
@@ -1763,7 +1812,7 @@ function DocListSection({
         <div className="border-t border-line px-4 py-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <span className="text-[12px] text-ink-500">
-              共 {filtered.length} 条文档
+              共 {total} 条文档
             </span>
             <div className="flex items-center gap-1">
               <Button
@@ -1774,16 +1823,25 @@ function DocListSection({
               >
                 ‹
               </Button>
-              <button
-                type="button"
-                onClick={() => setPage(1)}
-                className="flex h-7 min-w-[28px] items-center justify-center rounded-md bg-brand-soft px-2 text-[12px] font-medium text-brand"
-              >
-                1
-              </button>
+              {Array.from({ length: totalPages }, (_, index) => index + 1).map(
+                (item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setPage(item)}
+                    className={
+                      item === page
+                        ? 'flex h-7 min-w-[28px] items-center justify-center rounded-md bg-brand-soft px-2 text-[12px] font-medium text-brand'
+                        : 'flex h-7 min-w-[28px] items-center justify-center rounded-md px-2 text-[12px] text-ink-500 hover:bg-soft'
+                    }
+                  >
+                    {item}
+                  </button>
+                ),
+              )}
               <Button
                 size="middle"
-                disabled={paged.length < pageSize}
+                disabled={page >= totalPages}
                 onClick={() => setPage(page + 1)}
                 className="!rounded-md"
               >
@@ -2313,10 +2371,7 @@ export function KnowledgeSettingsPage() {
           <>
             {tab === 'doc' ? (
               <StatusTag tone="blue">
-                {docsState.filtered.length} 个文档 ·{' '}
-                {docsState.filtered.filter((d) => d.status === 'indexed')
-                  .length}{' '}
-                已索引
+                {docsState.total} 个文档 · {docsState.indexedCount} 已索引
               </StatusTag>
             ) : (
               <StatusTag tone={isDirty ? 'warn' : 'green'}>

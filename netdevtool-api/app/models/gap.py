@@ -2,10 +2,10 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     DateTime,
     ForeignKey,
-    JSON,
     String,
     UniqueConstraint,
     func,
