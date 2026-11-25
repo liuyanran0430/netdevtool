@@ -1,0 +1,14 @@
+entity_id: vxlan_nve
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: false
+confidence: medium
+unsupported_reason: "需先全局启用 L2VPN，且当前聚合命令未验证，暂不支持自动生成"
+verified: false
+warnings:
+  - "请按对应版本配置手册核对 VXLAN 隧道源地址、目的地址及 VNI 绑定配置"
+sources:
+  - "H3C Comware V7 VXLAN 配置：interface tunnel number mode vxlan 视图下 source ip-address"
+  - "H3C Comware V7 VXLAN 配置：interface tunnel number mode vxlan 视图下 destination ip-address"

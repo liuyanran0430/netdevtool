@@ -1,0 +1,16 @@
+entity_id: vxlan_bridge_domain
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+segments:
+  - path: ["bridge-domain {bd_id}"]
+    lines:
+      - text: "vxlan vni {vni}"
+verified: true
+warnings:
+  - "仅覆盖 BD 与 VNI 绑定；BDIF 地址、MAC 学习与泛洪方式需另行配置"
+sources:
+  - "华为 CE VXLAN 配置：bridge-domain 视图下 vxlan vni vni-id 绑定 VNI"

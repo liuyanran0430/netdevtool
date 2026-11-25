@@ -7,9 +7,10 @@ supported: true
 confidence: high
 pre_commands:
   - "port link-type access"
-view_path: ["interface {intf}"]
-command: "port default vlan {vlan_id}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "port default vlan {vlan_id}"
 verified: true
 sources:
   - "华为通用语法，port default vlan 为 access 端口划 VLAN 的标准命令"

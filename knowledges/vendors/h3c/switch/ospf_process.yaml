@@ -5,12 +5,12 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
-command: "ospf {process_id} router-id {router_id}"
-sub_commands:
-  - "router-id {router_id}"
-view: system-view
+segments:
+  - key: [process_id]
+    path: ["ospf {process_id} [router-id {router_id}]"]
+    lines: []
 verified: true
 warnings:
-  - "源配置若只创建进程未配置 router-id（ospf <pid>），该行不会被识别，需人工补充"
+  - "源配置省略 router-id（ospf <pid>）时按原样生成，Router ID 由设备自动选举"
 sources:
-  - "H3C Comware V7 命令：ospf process-id router-id router-id"
+  - "H3C Comware V7 命令：ospf process-id [router-id router-id]"

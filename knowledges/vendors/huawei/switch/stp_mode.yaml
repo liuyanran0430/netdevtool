@@ -7,8 +7,10 @@ supported: true
 confidence: high
 pre_commands:
   - "stp enable"
-command: stp mode {mode}
-view: system-view
+segments:
+  - path: []
+    lines:
+      - text: stp mode {mode}
 verified: true
 sources:
   - "华为 VRP：stp mode {mode}"

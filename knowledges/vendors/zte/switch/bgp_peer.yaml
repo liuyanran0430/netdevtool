@@ -1,0 +1,19 @@
+entity_id: bgp_peer
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+segments:
+  - key: [local_as]
+    path: ["router bgp {local_as}"]
+    lines:
+      - text: "neighbor {peer_ip} remote-as {remote_as}"
+        each: peers
+verified: false
+warnings:
+  - "ZXR10 使用 neighbor remote-as 关键字，与华为/华三的 peer as-number 不同"
+  - "仅覆盖 IPv4 单播邻居；peer group、password 等属性需要人工确认"
+sources:
+  - "ZXR10 交换机 BGP 配置：BGP 配置模式下 neighbor ip-address remote-as as-number"

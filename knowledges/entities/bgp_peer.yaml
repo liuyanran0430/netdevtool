@@ -1,0 +1,25 @@
+id: bgp_peer
+domain: routing
+description: "在 BGP 进程下指定邻居地址与对端 AS 号"
+parameters:
+  local_as:
+    type: int
+    range: [1, 4294967295]
+    required: true
+    note: "本地 AS 号，用于定位 bgp 视图"
+  peer_ip:
+    type: string
+    format: ipv4
+    required: true
+    note: "邻居接口地址或 Loopback 地址，需与本端三层可达"
+  remote_as:
+    type: int
+    range: [1, 4294967295]
+    required: true
+    note: "对端 AS 号；与本端相同为 IBGP，不同为 EBGP"
+collections:
+  peers: [peer_ip, remote_as]
+semantic_notes:
+  - "华为/华三使用 peer <ip> as-number <as>，必须先进入 bgp <local-as> 视图"
+  - "仅配置本端邻居不会建立会话，对端需配置反向邻居且底层 IP 可达"
+  - "IBGP 邻居通常还需 next-hop-local 或全互联/路由反射器配合，此处只覆盖邻居本身"

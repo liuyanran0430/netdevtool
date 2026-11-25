@@ -10,7 +10,7 @@ from app.repositories.knowledge_gap_repository import KnowledgeGapRepository
 from app.repositories.review_item_repository import ReviewItemRepository
 from app.schemas import (
     TranslationResult,
-    TranslationResultLine,
+    TranslationResultLines,
     TranslationResultSummary,
     TranslationWarning,
 )
@@ -50,41 +50,32 @@ def source_device() -> Device:
 def review_result() -> TranslationResult:
     return TranslationResult(
         lines=[
-            TranslationResultLine(no=1, text="system-view", tone="muted"),
-            TranslationResultLine(
-                no=2,
-                text="unknown action 10",
+            TranslationResultLines(text="system-view", tone="muted"),
+            TranslationResultLines(text="unknown action 10",
                 tone="error",
-                source_no=2,
             ),
-            TranslationResultLine(
-                no=3,
-                text="unknown action 20",
+            TranslationResultLines(text="unknown action 20",
                 tone="error",
-                source_no=3,
             ),
-            TranslationResultLine(
-                no=4,
-                text="show current-configuration",
+            TranslationResultLines(text="show current-configuration",
                 tone="warn",
-                source_no=4,
             ),
         ],
         warnings=[
             TranslationWarning(
-                no=2,
+                no=[2],
                 message="未识别 10",
                 code="unknown_command",
                 severity="error",
             ),
             TranslationWarning(
-                no=3,
+                no=[3],
                 message="未识别 20",
                 code="unknown_command",
                 severity="error",
             ),
             TranslationWarning(
-                no=4,
+                no=[4],
                 message="显示命令已转换",
                 code="display_command",
                 severity="warn",

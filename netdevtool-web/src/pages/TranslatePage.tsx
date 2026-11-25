@@ -44,8 +44,9 @@ import {
   type TranslationListItem,
 } from '../api/translations'
 import type {
+  TranslationEntityInfo,
   TranslationResult,
-  TranslationResultLine,
+  TranslationResultLines,
   TranslationTone,
 } from '../api/translations'
 import { translationSignature, useTranslationTask } from '../hooks/useTranslationTask'
@@ -416,10 +417,10 @@ function TranslateStatusRow({
               {stale ? '结果已过期' : '翻译完成'}
             </span>
             <span className="text-xs text-ink-500">
-              {stale ? '源配置已修改，结果基于修改前内容' : `${deviceSummary} · 共 ${total ?? '—'} 条命令`}
+              {stale ? '源配置已修改，结果基于修改前内容' : `${deviceSummary} · 生成 ${total ?? '—'} 条命令`}
             </span>
             {stale ? (
-              <span className="text-[11px] text-ink-400">共 {total ?? '—'} 条命令</span>
+              <span className="text-[11px] text-ink-400">生成 {total ?? '—'} 条命令</span>
             ) : (
               <span className="text-[11px] text-ink-400">
                 耗时 {durationMs === undefined ? '—' : `${(durationMs / 1000).toFixed(1)} s`}
@@ -461,13 +462,11 @@ function CodeRow({
   item,
   onSelect,
   blockActive = false,
-  dimmed = false,
 }: {
   item: CodeLine
-  onSelect?: (sourceNo: number, lineNo: number) => void
+  onSelect?: (sourceNo: number, lineNo: number, entityId?: string | null) => void
   /** 当前行属于选中映射块 */
   blockActive?: boolean
-  dimmed?: boolean
 }) {
   const stateClass = {
     focus: 'bg-brand-soft',
@@ -477,10 +476,11 @@ function CodeRow({
     muted: 'bg-white',
   }[item.state ?? 'muted']
   // 结果行可点击：与源配置行联动高亮，再次点击已选中的行取消选中
-  const selectable = Boolean(onSelect) && item.sourceNo != null
+  const primarySource = item.sourceNos?.[0] ?? null
+  const selectable = Boolean(onSelect) && primarySource != null
   // 左侧竖线标示映射块，自动补齐的命令（无源行号）用虚线区分
   const edgeClass =
-    item.sourceNo == null
+    primarySource == null
       ? 'border-dashed border-line'
       : blockActive
         ? 'border-brand'
@@ -489,13 +489,15 @@ function CodeRow({
   return (
     <div
       data-row={item.no}
-      data-source-no={item.sourceNo ?? ''}
+      data-source-no={primarySource ?? ''}
       onClick={
-        selectable ? () => onSelect?.(item.sourceNo as number, item.no) : undefined
+        selectable
+          ? () => onSelect?.(primarySource as number, item.no, item.entityId ?? null)
+          : undefined
       }
-      className={`flex h-6 items-center border-l-2 pr-2 transition-opacity ${edgeClass} ${stateClass} ${
-        dimmed ? 'opacity-50' : ''
-      } ${selectable ? 'cursor-pointer' : ''}`}
+      className={`flex h-6 items-center border-l-2 pr-2 transition-colors ${edgeClass} ${stateClass} ${
+        selectable ? 'cursor-pointer' : ''
+      }`}
     >
       <span className="w-[38px] shrink-0 select-none text-right font-mono text-[11px] leading-none text-ink-300">
         {item.no}
@@ -529,26 +531,28 @@ function SourceEditor({
   value,
   onChange,
   marks,
-  focusLine,
+  focusLines,
   onSelectLine,
   onCursorChange,
 }: {
   value: string
   onChange: (next: string) => void
   marks?: Map<number, 'warn' | 'error'>
-  focusLine?: number | null
+  focusLines?: number[]
   onSelectLine?: (sourceNo: number, lineNo?: number) => void
   onCursorChange?: (position: { line: number; column: number }) => void
 }) {
   const [scrollTop, setScrollTop] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const lineCount = Math.max(1, value.split('\n').length)
+  const focusSet = new Set(focusLines ?? [])
+  const hasFocus = focusSet.size > 0
 
   const markAt = (lineNo: number) => marks?.get(lineNo)
   const bgOf = (tone?: 'warn' | 'error') =>
     tone === 'error' ? 'bg-danger-soft' : tone === 'warn' ? 'bg-warn-soft' : ''
   const rowBg = (lineNo: number) =>
-    lineNo === focusLine ? 'bg-brand-soft' : bgOf(markAt(lineNo))
+    focusSet.has(lineNo) ? 'bg-brand-soft' : bgOf(markAt(lineNo))
 
   // 光标位置换算为行列号，供底部状态栏展示
   const reportCursor = (element: HTMLTextAreaElement) => {
@@ -605,7 +609,7 @@ function SourceEditor({
           className="thin-scrollbar relative h-full min-h-[280px] w-full flex-1 resize-none bg-transparent py-1 pl-3 pr-6 font-mono text-[12px] leading-6 text-ink-900 outline-none placeholder:text-ink-300"
         />
         {/* 选中映射时弱化非关联行，突出当前源行 */}
-        {focusLine != null ? (
+        {hasFocus ? (
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 overflow-hidden pt-1"
@@ -614,7 +618,7 @@ function SourceEditor({
               {Array.from({ length: lineCount }, (_, index) => (
                 <div
                   key={index}
-                  className={`h-6 ${index + 1 === focusLine ? '' : 'bg-white/60'}`}
+                  className={`h-6 ${focusSet.has(index + 1) ? '' : 'bg-white/60'}`}
                 />
               ))}
             </div>
@@ -625,7 +629,7 @@ function SourceEditor({
             {Array.from({ length: lineCount }, (_, index) => {
               const lineNo = index + 1
               const tone = markAt(lineNo)
-              const focused = lineNo === focusLine
+              const focused = focusSet.has(lineNo)
               return (
                 <div key={index} className="flex h-6 items-center justify-end gap-1">
                   {tone === 'warn' ? (
@@ -686,8 +690,10 @@ interface ConfigPanelProps {
   errorCount?: number
   sourceSaveState?: 'empty' | 'saved' | 'failed'
   sourceMarks?: Map<number, 'warn' | 'error'>
-  focusLine?: number | null
-  onSelectLine?: (sourceNo: number, lineNo?: number) => void
+  focusLines?: number[]
+  /** 当前选中段所属实体，优先于行号集合匹配 */
+  focusEntityId?: string | null
+  onSelectLine?: (sourceNo: number, lineNo?: number, entityId?: string | null) => void
   detail?: PanelDetail
   /** 本面板处于放大态（图标与 aria-label 切换） */
   expanded?: boolean
@@ -717,7 +723,8 @@ function ConfigPanel({
   errorCount = 0,
   sourceSaveState = 'empty',
   sourceMarks,
-  focusLine,
+  focusLines,
+  focusEntityId,
   onSelectLine,
   detail,
   expanded = false,
@@ -733,6 +740,16 @@ function ConfigPanel({
     () => (isSource ? [] : resultLines ?? []),
     [isSource, resultLines],
   )
+
+  // 目标面板按实体或源行集合判断是否属于当前选中段
+  const focusSet = new Set(focusLines ?? [])
+  const relatedToSelection = (item: CodeLine) => {
+    if (focusEntityId) {
+      return item.entityId === focusEntityId
+    }
+    if (focusSet.size === 0) return false
+    return item.sourceNos?.some((no) => focusSet.has(no)) ?? false
+  }
 
   const sourceDeviceLabel =
     sourceVendor && sourceModel ? `${sourceVendor} · ${sourceModel}` : '未选择源设备'
@@ -861,7 +878,7 @@ function ConfigPanel({
           value={sourceText}
           onChange={onSourceTextChange ?? (() => {})}
           marks={sourceMarks}
-          focusLine={focusLine}
+          focusLines={focusLines}
           onSelectLine={onSelectLine}
           onCursorChange={setCursor}
         />
@@ -878,8 +895,7 @@ function ConfigPanel({
               key={`${item.no}-${index}`}
               item={item}
               onSelect={onSelectLine}
-              blockActive={focusLine != null && item.sourceNo === focusLine}
-              dimmed={focusLine != null && item.sourceNo !== focusLine}
+              blockActive={relatedToSelection(item)}
             />
           ))}
         </div>
@@ -957,7 +973,37 @@ function HistoryDeviceLine({ label, vendor, model }: { label: string; vendor: st
   )
 }
 
-function summarizeAudit(lines: TranslationResultLine[] | undefined) {
+/** 从 entities 反查：目标行索引 → 该索引归属的所有实体 ID（共享视图行可能归属多个实体）。 */
+function buildEntityIndexMap(
+  entities: TranslationEntityInfo[] | undefined,
+): Map<number, string[]> {
+  const map = new Map<number, string[]>()
+  for (const entity of entities ?? []) {
+    for (const idx of entity.target_line_indices) {
+      const ids = map.get(idx) ?? []
+      ids.push(entity.id)
+      map.set(idx, ids)
+    }
+  }
+  return map
+}
+
+/** 从 entities 反查：源行号 → 覆盖它的所有实体 ID。 */
+function buildSourceNoEntityMap(
+  entities: TranslationEntityInfo[] | undefined,
+): Map<number, string[]> {
+  const map = new Map<number, string[]>()
+  for (const entity of entities ?? []) {
+    for (const no of entity.source_nos) {
+      const ids = map.get(no) ?? []
+      ids.push(entity.id)
+      map.set(no, ids)
+    }
+  }
+  return map
+}
+
+function summarizeAudit(lines: TranslationResultLines[] | undefined) {
   const stats = { total: 0, high: 0, medium: 0, low: 0 }
   for (const line of lines ?? []) {
     // muted 为视图行 / 注释 / 空行，不参与置信度统计
@@ -1002,7 +1048,7 @@ function AuditPanel({
   onDeleteCheckpoint,
 }: {
   result: TranslationResult | null
-  lines: TranslationResultLine[]
+  lines: TranslationResultLines[]
   review?: AuditReview | null
   checkpoints: Checkpoint[]
   canCreateCheckpoint: boolean
@@ -1036,7 +1082,7 @@ function AuditPanel({
     if (!text) return
     review.onAcceptEdited?.(text)
   }
-  // 按 code 聚合行级 warnings，一类问题一条
+  // 按 code 聚合段级 warnings，一类问题一条
   const groups = useMemo(() => {
     const map = new Map<string, WarningGroup>()
     for (const warning of result?.warnings ?? []) {
@@ -1048,7 +1094,9 @@ function AuditPanel({
         lines: [],
         messages: [],
       }
-      if (!group.lines.includes(warning.no)) group.lines.push(warning.no)
+      for (const no of warning.no) {
+        if (!group.lines.includes(no)) group.lines.push(no)
+      }
       if (warning.severity === 'error') group.severity = 'error'
       if (!group.messages.includes(warning.message)) group.messages.push(warning.message)
       map.set(code, group)
@@ -1262,11 +1310,16 @@ function AuditPanel({
               <button
                 type="button"
                 onClick={() => {
-                  const first = lines.find(
-                    (item) =>
-                      item.source_no != null && (item.tone === 'warn' || item.tone === 'error'),
+                  // 找第一个 warn/error 的目标行，从 result.entities 反查其 sourceNo
+                  const firstIdx = lines.findIndex(
+                    (item) => item.tone === 'warn' || item.tone === 'error',
                   )
-                  if (first?.source_no != null) onSelectLine?.(first.source_no)
+                  if (firstIdx < 0 || !result) return
+                  const entity = result.entities?.find((e) =>
+                    e.target_line_indices.includes(firstIdx),
+                  )
+                  const sourceNo = entity?.source_nos?.[0] ?? null
+                  if (sourceNo != null) onSelectLine?.(sourceNo)
                 }}
                 className="flex h-8 w-full items-center justify-center rounded-md bg-warn-soft text-[11px] text-warn transition-colors hover:bg-warn-soft/70"
               >
@@ -1390,14 +1443,17 @@ export function TranslatePage() {
   // 设备档案：历史恢复时按厂商 + 型号反查设备类型，保证类型与设备选择一致
   const devicesRef = useRef<Device[] | null>(null)
   // 选中的源配置行与结果行：两侧同时高亮为 focus，底部详情卡片同步更新
-  const [selection, setSelection] = useState<{ sourceNo: number; lineNo: number | null } | null>(
+  const [selection, setSelection] = useState<{
+    sourceNo: number
+    lineNo: number | null
+    entityId: string | null
+  } | null>(
     null,
   )
-  // 选中行两侧的滚动对齐请求：sourceLine 为源行，targetRow 为结果行（为空时取该源行首行）
+  // 选中行两侧的滚动对齐请求：sourceLine 为源行，targetRow 为结果行（为空时仅滚动源面板）
   const [align, setAlign] = useState<{
     sourceLine?: number
     targetRow?: number
-    token: number
   } | null>(null)
   const { status, result, requestId, error, submittedSignature, start, resume, reset } =
     useTranslationTask()
@@ -1529,7 +1585,7 @@ export function TranslatePage() {
   }, [])
 
   // 合并人工处理结果后的行视图，供展示、统计与导出共用
-  const reviewedLines = useMemo<TranslationResultLine[]>(() => {
+  const reviewedLines = useMemo<TranslationResultLines[]>(() => {
     if (!result) return []
     return result.lines.map((line, index) => {
       const review = reviews.get(index)
@@ -1537,6 +1593,21 @@ export function TranslatePage() {
       return { ...line, tone: review.tone, text: review.text ?? line.text }
     })
   }, [result, reviews])
+
+  // 实体元数据索引，供所有联动逻辑复用
+  const entityMap = useMemo(() => {
+    const map = new Map<string, TranslationEntityInfo>()
+    for (const e of result?.entities ?? []) map.set(e.id, e)
+    return map
+  }, [result])
+  const entityIndexMap = useMemo(
+    () => buildEntityIndexMap(result?.entities),
+    [result],
+  )
+  const sourceNoEntityMap = useMemo(
+    () => buildSourceNoEntityMap(result?.entities),
+    [result],
+  )
 
   // 回到本页时按已保存的 requestId 从后端恢复结果（避免把大结果写进 localStorage）
   useEffect(() => {
@@ -1562,11 +1633,17 @@ export function TranslatePage() {
   // 已提交过任务或已有源配置（含历史恢复）时，去提问需带上任务上下文提示
   const hasTranslationTask = Boolean(requestId) || source.text.trim().length > 0
 
-  // 旧版本任务的结果不含 entity_id / warnings / entities，恢复后自动重译一次以加载详情
+  // 旧版本任务的结果缺少实体联动元数据（source_nos / target_line_indices），恢复后自动重译一次
   const legacyRetriedRef = useRef(false)
   useEffect(() => {
     if (!translated || !result || legacyRetriedRef.current) return
-    if (result.entities !== undefined && result.warnings !== undefined) return
+    const hasEntityMeta =
+      result.entities !== undefined &&
+      result.entities.every(
+        (entity) =>
+          Array.isArray(entity.source_nos) && Array.isArray(entity.target_line_indices),
+      )
+    if (hasEntityMeta && result.warnings !== undefined) return
     if (submittedSignature === null || !source.text.trim()) return
     if (!sourceDevice.vendor || !sourceDevice.model || !targetDevice.vendor) return
     if (!targetDevice.model) return
@@ -1591,19 +1668,44 @@ export function TranslatePage() {
   const targetResultLines = useMemo<CodeLine[]>(
     () =>
       reviewedLines.map((item, index) => {
-        const focused = selection !== null && item.source_no === selection.sourceNo
+        // 从 entityIndexMap 反查：该行归属哪些实体（共享视图可能多实体）
+        const entityIds = entityIndexMap.get(index) ?? []
+        const primaryEntityId = entityIds[0] ?? null
+        // 无实体行（未识别命令、显示命令）取行级映射的源行号
+        const lineSourceNo = result?.line_source_nos?.[index] ?? null
         // warn / error 行保持原图标，success / muted 行聚焦后换成链接图标
         const baseIcon: CodeLine['icon'] =
           item.tone === 'warn' ? 'warning' : item.tone === 'error' ? 'error' : undefined
+        // 源行号优先从实体元数据反查，无实体时回退行级映射
+        const sourceNos =
+          entityIds.length > 0
+            ? [...new Set(entityIds.flatMap((eid) => entityMap.get(eid)?.source_nos ?? []))].sort(
+                (a, b) => a - b,
+              )
+            : lineSourceNo != null
+              ? [lineSourceNo]
+              : null
+        const focused =
+          selection !== null &&
+          ((selection.entityId != null
+            ? entityIds.includes(selection.entityId)
+            : sourceNoEntityMap.get(selection.sourceNo)?.some((eid) =>
+                entityIds.includes(eid),
+              ) ?? false) ||
+            // 点击无实体的源行时，按行级映射高亮对应目标行
+            (selection.entityId == null &&
+              selection.sourceNo != null &&
+              sourceNos?.includes(selection.sourceNo)))
         return {
           no: index + 1,
           parts: [{ text: item.text }],
           state: focused ? 'focus' : item.tone,
           icon: baseIcon ?? (focused ? 'link' : undefined),
-          sourceNo: item.source_no,
+          sourceNos,
+          entityId: primaryEntityId,
         }
       }),
-    [reviewedLines, selection],
+    [reviewedLines, selection, entityIndexMap, sourceNoEntityMap, entityMap, result],
   )
 
   // 新的翻译结果到达后清除选中与人工处理记录
@@ -1613,73 +1715,87 @@ export function TranslatePage() {
     setReviews(new Map())
   }, [result])
 
-  const handleSelectLine = (sourceNo: number, lineNo?: number) => {
+  const handleSelectLine = (sourceNo: number, lineNo?: number, entityId?: string | null) => {
     // 结果已过期时禁用选中高亮，避免误导为当前结果的核对状态
     if (stale) return
+    // 点击已高亮的行（同一实体任意行，或同一源行）视为取消选中；取消只清高亮，不滚动
     const toggling =
       selection !== null &&
-      selection.sourceNo === sourceNo &&
-      selection.lineNo === (lineNo ?? null)
+      ((selection.entityId != null && entityId != null && selection.entityId === entityId) ||
+        (selection.sourceNo === sourceNo &&
+          (lineNo == null || selection.lineNo == null || selection.lineNo === lineNo)))
     if (toggling) {
       setSelection(null)
       setAlign(null)
       return
     }
-    setSelection({ sourceNo, lineNo: lineNo ?? null })
-    // 两侧滚动到同一高度，使源行与其对应的结果行水平对齐
-    setAlign({ sourceLine: sourceNo, targetRow: lineNo, token: Date.now() })
+    // 从源行号反查实体（点击源行时）：命中多个实体时取第一个
+    let resolvedEntityId: string | null = entityId ?? null
+    if (resolvedEntityId == null) {
+      const entityIds = sourceNoEntityMap.get(sourceNo) ?? []
+      if (entityIds.length > 0) resolvedEntityId = entityIds[0]
+    }
+    setSelection({ sourceNo, lineNo: lineNo ?? null, entityId: resolvedEntityId })
   }
 
-  // 选中行对齐：取两个面板都能达到的共同高度，再分别把目标行滚动到该位置
+  // 选中行对齐：两侧选中行尽量滚到同一视口高度（靠近共同中线），任一侧滚动余量不足时取可行区间
   useEffect(() => {
     if (align?.sourceLine == null) return
     const { sourceLine, targetRow } = align
     const frame = requestAnimationFrame(() => {
       const sourceEl = document.querySelector<HTMLTextAreaElement>('[data-scroll="source"]')
       const resultEl = document.querySelector<HTMLElement>('[data-scroll="result"]')
-      if (!sourceEl || !resultEl) return
-      const row =
-        (targetRow != null
-          ? resultEl.querySelector<HTMLElement>(`[data-row="${targetRow}"]`)
-          : null) ??
-        resultEl.querySelector<HTMLElement>(`[data-source-no="${sourceLine}"]`)
-      if (!row) return
-      // 两行在各自滚动内容中的起点（含顶部内边距，保持口径一致）
+      if (!sourceEl) return
+      // 源侧固定行高，行在滚动内容中的起点
       const sourceTop = (sourceLine - 1) * LINE_HEIGHT + TEXTAREA_PADDING_TOP
-      const rowTop =
-        row.getBoundingClientRect().top -
-        resultEl.getBoundingClientRect().top +
-        resultEl.scrollTop
+      // 结果面板为 relative 定位，offsetTop 即行在滚动内容中的起点；无映射行时仅滚动源侧
+      const resultRow =
+        (targetRow != null
+          ? resultEl?.querySelector<HTMLElement>(`[data-row="${targetRow}"]`)
+          : null) ??
+        resultEl?.querySelector<HTMLElement>(`[data-source-no="${sourceLine}"]`) ??
+        null
       const sourceMax = Math.max(0, sourceEl.scrollHeight - sourceEl.clientHeight)
+      if (!resultRow || !resultEl) {
+        sourceEl.scrollTop = Math.max(0, Math.min(sourceTop - LINE_HEIGHT / 2, sourceMax))
+        return
+      }
+      const resultTop = resultRow.offsetTop
       const resultMax = Math.max(0, resultEl.scrollHeight - resultEl.clientHeight)
-      // 面板内容不足时无法居中，取两侧都能满足的可行高度区间，尽量靠近中线
-      const low = Math.max(0, sourceTop - sourceMax, rowTop - resultMax)
-      const high = Math.min(
-        sourceTop,
-        rowTop,
-        sourceEl.clientHeight - LINE_HEIGHT,
-        resultEl.clientHeight - LINE_HEIGHT,
-      )
+      // 两侧都把选中行放到视口高度 anchor 的可行区间；区间为空时满足受限更紧的一侧
       const center =
         Math.min(sourceEl.clientHeight, resultEl.clientHeight) / 2 - LINE_HEIGHT / 2
-      const anchor = high >= low ? Math.min(Math.max(center, low), high) : low
+      const low = Math.max(0, sourceTop - sourceMax, resultTop - resultMax)
+      const high = Math.min(sourceTop, resultTop)
+      const anchor = Math.min(Math.max(center, low), Math.max(high, low))
       sourceEl.scrollTop = Math.max(0, sourceTop - anchor)
-      resultEl.scrollTop = Math.max(0, rowTop - anchor)
+      resultEl.scrollTop = Math.max(0, resultTop - anchor)
     })
     return () => cancelAnimationFrame(frame)
   }, [align])
 
+  // 源面板标记直接来自后端告警（no 已收窄到具体源行），不再按目标行 tone 反推，
+  // 避免共享视图行把接口告警传染到视图下所有命令
   const sourceMarks = useMemo(() => {
     const marks = new Map<number, 'warn' | 'error'>()
-    for (const item of reviewedLines) {
-      if (item.source_no === null || item.source_no === undefined) continue
-      if (item.tone !== 'warn' && item.tone !== 'error') continue
-      // 同一源行命中多行时取更严重的级别
-      if (marks.get(item.source_no) === 'error') continue
-      marks.set(item.source_no, item.tone)
+    for (const warning of result?.warnings ?? []) {
+      // 关联实体的目标行已全部人工处理为 success 时，源行不再标记
+      const entity = warning.entity_id ? entityMap.get(warning.entity_id) : undefined
+      if (
+        entity &&
+        entity.target_line_indices.length > 0 &&
+        entity.target_line_indices.every((idx) => reviewedLines[idx]?.tone === 'success')
+      ) {
+        continue
+      }
+      const tone = warning.severity === 'error' ? 'error' : 'warn'
+      for (const sourceNo of warning.no) {
+        if (marks.get(sourceNo) === 'error') continue
+        marks.set(sourceNo, tone)
+      }
     }
     return marks
-  }, [reviewedLines])
+  }, [result, reviewedLines, entityMap])
 
   const resultStats = useMemo(() => {
     let warn = 0
@@ -1719,12 +1835,71 @@ export function TranslatePage() {
   const warningMap = useMemo(() => {
     const map = new Map<number, string[]>()
     for (const warning of result?.warnings ?? []) {
-      const messages = map.get(warning.no) ?? []
-      messages.push(warning.message)
-      map.set(warning.no, messages)
+      for (const no of warning.no) {
+        const messages = map.get(no) ?? []
+        messages.push(warning.message)
+        map.set(no, messages)
+      }
     }
     return map
   }, [result])
+
+  // 源面板高亮：直接从 entity 的 source_nos 取，天然干净
+  const sourceFocusLines = useMemo(() => {
+    if (!selection) return []
+    // 优先按选中的 entityId 取
+    if (selection.entityId != null) {
+      const entity = entityMap.get(selection.entityId)
+      if (entity) return [...entity.source_nos].sort((a, b) => a - b)
+    }
+    // 回退：按选中的源行号反查
+    const lineNo = selection.sourceNo
+    if (lineNo != null) {
+      const entityIds = sourceNoEntityMap.get(lineNo) ?? []
+      const nos = new Set<number>([lineNo])
+      for (const eid of entityIds) {
+        const e = entityMap.get(eid)
+        if (e) for (const n of e.source_nos) nos.add(n)
+      }
+      return [...nos].sort((a, b) => a - b)
+    }
+    return []
+  }, [selection, entityMap, sourceNoEntityMap])
+
+  // 第一个高亮的目标行：直接从 entity.target_line_indices 取首项
+  const firstFocusTargetRow = useMemo(() => {
+    if (!selection) return null
+    if (selection.entityId != null) {
+      const entity = entityMap.get(selection.entityId)
+      if (entity && entity.target_line_indices.length) {
+        return Math.min(...entity.target_line_indices) + 1 // 1-based
+      }
+    }
+    // 回退：按源行号反查
+    const lineNo = selection.sourceNo
+    if (lineNo != null) {
+      const entityIds = sourceNoEntityMap.get(lineNo) ?? []
+      let minIdx = Infinity
+      for (const eid of entityIds) {
+        const e = entityMap.get(eid)
+        if (e) for (const idx of e.target_line_indices) minIdx = Math.min(minIdx, idx)
+      }
+      if (isFinite(minIdx)) return minIdx + 1
+      // 无实体行（未识别命令等）按行级映射找第一个目标行
+      const idx = result?.line_source_nos?.findIndex((no) => no === lineNo) ?? -1
+      if (idx >= 0) return idx + 1
+    }
+    return null
+  }, [selection, entityMap, sourceNoEntityMap, result])
+
+  // 选中变化后，把两侧的第一个高亮行对齐到同一高度
+  useEffect(() => {
+    if (!selection) return
+    setAlign({
+      sourceLine: sourceFocusLines[0] ?? selection.sourceNo,
+      targetRow: firstFocusTargetRow ?? undefined,
+    })
+  }, [selection, sourceFocusLines, firstFocusTargetRow])
 
   // 源侧详情：显示选中行对应的实体描述
   const sourceDetail = useMemo<PanelDetail | undefined>(() => {
@@ -1732,32 +1907,35 @@ export function TranslatePage() {
     const lineNo = selection.sourceNo
     const lines = source.text ? source.text.split('\n').map((line) => line.replace(/\r$/, '')) : []
     const text = (lines[lineNo - 1] ?? '').trim()
-    const mapped = reviewedLines.filter((item) => item.source_no === lineNo)
-    const entityId = mapped.find((item) => item.entity_id)?.entity_id ?? null
+    const entityId = selection.entityId
     const legacy = result !== null && result.entities === undefined
+    const hasEntity = entityId != null || (sourceNoEntityMap.get(lineNo)?.length ?? 0) > 0
     const description = entityId
       ? (entityDescriptions.get(entityId) ?? '暂无实体说明')
-      : legacy && mapped.length > 0
-        ? '结果由旧版本生成，正在重新翻译以加载实体说明'
-        : text === ''
-          ? '空行'
-          : text.startsWith('#') || text.startsWith('!')
-            ? '注释行'
-            : mapped.some((item) => item.tone === 'error')
-              ? '未识别的命令，已原样保留'
-              : mapped.length > 0
-                ? '视图行 · 不参与命令翻译'
-                : '该行未参与翻译'
-    const tones = mapped.map((item) => item.tone)
-    const severity = tones.includes('error')
-      ? 'error'
-      : tones.includes('warn')
-        ? 'warn'
-        : tones.includes('success')
-          ? 'success'
+      : legacy
+          ? '结果由旧版本生成，正在重新翻译以加载实体说明'
+          : text === ''
+            ? '空行'
+            : text.startsWith('#') || text.startsWith('!')
+              ? '注释行'
+              : hasEntity
+                ? '该行参与翻译'
+                : result?.line_source_nos?.some((no) => no === lineNo)
+                  ? '未识别命令，已原样保留'
+                  : '该行未参与翻译'
+    const severity =
+      entityId != null && result?.warnings?.some(
+        (w) => w.entity_id === entityId && w.severity === 'error',
+      )
+        ? 'error'
+        : entityId != null && result?.warnings?.some(
+            (w) => w.entity_id === entityId && w.severity === 'warn',
+          )
+          ? 'warn'
           : null
     return {
-      title: `L${lineNo} · ${text || '空行'}`,
+      // 标题不显示行号与命令：命中实体显示实体名，否则提示未命中
+      title: entityId ? `命中实体 ${entityId}` : '未命中实体',
       description,
       tag: severity ? TONE_TAG[severity] : undefined,
     }
@@ -1773,12 +1951,21 @@ export function TranslatePage() {
       }
     }
     const lines = reviewedLines
-    // 后端 no 是源配置行号，可能重复；按结果行序号（界面上显示的 L 编号）定位
+    // 从 entities 反查索引：优先用 lineNo，否则从 sourceNo 反查
     const index =
       selection.lineNo != null
         ? selection.lineNo - 1
-        : lines.findIndex((item) => item.source_no === selection.sourceNo)
-    const line = index >= 0 ? lines[index] : undefined
+        : Math.min(
+            ...((sourceNoEntityMap.get(selection.sourceNo) ?? [])
+              .flatMap((eid) => entityMap.get(eid)?.target_line_indices ?? [])),
+          )
+    if (!isFinite(index) || index < 0) {
+      return {
+        title: `L${selection.sourceNo} · 无对应结果`,
+        description: '该源配置行未产出翻译结果。',
+      }
+    }
+    const line = lines[index]
     if (!line) {
       return {
         title: `L${selection.sourceNo} · 无对应结果`,
@@ -1786,24 +1973,25 @@ export function TranslatePage() {
       }
     }
     const review = reviews.get(index)
-    // 优先按源行号匹配；旧渲染器的视图行 warning 挂在触发命令行上，回退到结果行号
-    let messages = line.source_no == null ? [] : (warningMap.get(line.source_no) ?? [])
-    if (messages.length === 0) messages = warningMap.get(line.no) ?? []
+    const eidAtIndex = entityIndexMap.get(index)?.[0] ?? null
+    const sourceNosAtIndex = eidAtIndex
+      ? (entityMap.get(eidAtIndex)?.source_nos ?? [])
+      : []
+    const sourceNo = sourceNosAtIndex[0] ?? null
+    const messages = sourceNo == null ? [] : (warningMap.get(sourceNo) ?? [])
     const description = review
       ? review.text != null
         ? '已人工修改并采纳，置信度标记为高'
         : '已人工采纳，置信度标记为高'
       : messages.length
         ? messages.join('；')
-        : line.source_no == null
-          ? '渲染器自动补齐的命令，非源配置内容'
-          : (TONE_FALLBACK[line.tone] ?? '无需复核')
+        : (TONE_FALLBACK[line.tone] ?? '无需复核')
     return {
       title: `L${index + 1} · ${line.text.trim() || '空行'}`,
       description,
       tag: TONE_TAG[line.tone],
     }
-  }, [selection, result, reviewedLines, warningMap, reviews])
+  }, [selection, reviewedLines, warningMap, reviews, entityMap, entityIndexMap, sourceNoEntityMap, source.text])
 
   // 采纳后自动定位到下一处待处理行：先向后找，到末尾回到开头
   const advanceAfterReview = (from: number) => {
@@ -1811,48 +1999,56 @@ export function TranslatePage() {
       ...reviewedLines.map((_, index) => index).slice(from + 1),
       ...reviewedLines.map((_, index) => index).slice(0, from),
     ]
-    const next = order.find((index) => {
-      const item = reviewedLines[index]
-      return item.source_no != null && (item.tone === 'warn' || item.tone === 'error')
-    })
-    const line = next == null ? undefined : reviewedLines[next]
-    if (next == null || !line || line.source_no == null) {
+    const next = order.find(
+      (index) =>
+        (entityIndexMap.get(index)?.length ?? 0) > 0 &&
+        (reviewedLines[index].tone === 'warn' || reviewedLines[index].tone === 'error'),
+    )
+    if (next == null) {
       setSelection(null)
       setAlign(null)
       return
     }
-    setSelection({ sourceNo: line.source_no, lineNo: next + 1 })
-    setAlign({ sourceLine: line.source_no, targetRow: next + 1, token: Date.now() })
+    const eid = entityIndexMap.get(next)?.[0] ?? null
+    const sourceNos = eid ? (entityMap.get(eid)?.source_nos ?? []) : []
+    const sourceNo = sourceNos[0] ?? null
+    if (sourceNo == null) {
+      setSelection(null)
+      setAlign(null)
+      return
+    }
+    setSelection({ sourceNo, lineNo: next + 1, entityId: eid })
+    setAlign({ sourceLine: sourceNo, targetRow: next + 1 })
   }
 
   // 选中 warn / error 行时，审计面板进入人工处理模式
   const reviewTarget = useMemo<AuditReview | null>(() => {
     if (!selection || !result) return null
-    let index =
+    // 优先按 lineNo 定位，否则从 sourceNo 反查所有归属实体的 target_line_indices
+    const candidateIndices =
       selection.lineNo != null
-        ? selection.lineNo - 1
-        : reviewedLines.findIndex((item) => item.source_no === selection.sourceNo)
-    // 点击源行时优先落到该行下最需要处理的 warn / error 结果行
-    if (selection.lineNo == null) {
-      const pending = reviewedLines.findIndex(
-        (item) =>
-          item.source_no === selection.sourceNo &&
-          (item.tone === 'warn' || item.tone === 'error'),
-      )
-      if (pending >= 0) index = pending
-    }
-    const line = index >= 0 ? reviewedLines[index] : undefined
-    if (!line) return null
+        ? [selection.lineNo - 1]
+        : (sourceNoEntityMap.get(selection.sourceNo) ?? []).flatMap(
+            (eid) => entityMap.get(eid)?.target_line_indices ?? [],
+          )
+    // 优先挑 warn/error 的，否则取第一个
+    let index = candidateIndices.find(
+      (idx) => idx >= 0 && (reviewedLines[idx]?.tone === 'warn' || reviewedLines[idx]?.tone === 'error'),
+    )
+    if (index == null) index = candidateIndices.find((idx) => idx >= 0)
+    if (index == null || reviewedLines[index] == null) return null
+    const line = reviewedLines[index]!
     // 高置信度行只展示通过结论与判定依据
     if (line.tone === 'success') {
       const reviewed = reviews.get(index)
+      const eid = entityIndexMap.get(index)?.[0] ?? null
       const reason = reviewed
         ? reviewed.text != null
           ? '已人工修改并采纳，置信度标记为高'
           : '已人工采纳，置信度标记为高'
-        : line.entity_id
-          ? `命中实体 ${line.entity_id}，参数完整`
-          : line.source_no == null
+        : eid
+          ? `命中实体 ${eid}，参数完整`
+          : (entityIndexMap.get(index)?.length ?? 0) === 0
             ? '渲染器自动补齐的命令，无匹配告警'
             : '知识库命令模板确定，未发现参数或映射告警'
       return { key: index, command: line.text, tone: 'success', reason }
@@ -2002,10 +2198,15 @@ export function TranslatePage() {
             sourceText={source.text}
             sourceFileName={source.fileName}
             onImportFile={source.importFile}
-            onSourceTextChange={source.setText}
+            onSourceTextChange={(next) => {
+              // 编辑（含粘贴）即清除选中与对齐，避免高亮残留误导
+              setSelection(null)
+              setAlign(null)
+              source.setText(next)
+            }}
             sourceSaveState={source.saveState}
             sourceMarks={sourceMarks}
-            focusLine={selection?.sourceNo ?? null}
+            focusLines={sourceFocusLines}
             onSelectLine={(lineNo) => handleSelectLine(lineNo)}
             detail={sourceDetail}
             expanded={expandedPanel === 'source'}
@@ -2023,8 +2224,11 @@ export function TranslatePage() {
             resultTotal={result?.summary.total}
             warnCount={resultStats.warn}
             errorCount={resultStats.error}
-            focusLine={selection?.sourceNo ?? null}
-            onSelectLine={(sourceNo, lineNo) => handleSelectLine(sourceNo, lineNo)}
+            focusLines={sourceFocusLines}
+            focusEntityId={selection?.entityId ?? null}
+            onSelectLine={(sourceNo, lineNo, entityId) =>
+              handleSelectLine(sourceNo, lineNo, entityId)
+            }
             detail={targetDetail}
             expanded={expandedPanel === 'result'}
             hidden={expandedPanel === 'source'}

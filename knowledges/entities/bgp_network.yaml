@@ -1,0 +1,25 @@
+id: bgp_network
+domain: routing
+description: "在 BGP 进程中宣告 IPv4 网段"
+parameters:
+  local_as:
+    type: int
+    range: [1, 4294967295]
+    required: true
+    note: "本地 AS 号，用于定位 bgp 视图"
+  network:
+    type: string
+    format: ipv4
+    required: true
+    note: "要宣告的网络地址，需与掩码配合表示一个网段"
+  mask:
+    type: string
+    format: ipv4_mask
+    required: true
+    note: "子网掩码，点分十进制格式，例如 255.255.255.0"
+collections:
+  networks: [network, mask]
+semantic_notes:
+  - "华为/华三在 bgp 视图下使用 network <network-address> <mask> 宣告网段"
+  - "宣告的网段必须已存在于本机路由表中且精确匹配，否则不会产生 BGP 路由"
+  - "与 OSPF 的 network 不同，BGP 的 network 不会让接口参与协议，只是把已有路由引入 BGP"

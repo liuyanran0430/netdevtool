@@ -1,0 +1,18 @@
+entity_id: vxlan_bridge_domain
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+pre_commands:
+  - view: vxlan
+    command: "global-vxlan enable"
+  - view: configure terminal
+    command: "mpls l2vpn enable"
+segments:
+  - path: ["vxlan", "vni-instance {vni}"]
+    lines: []
+verified: true
+sources:
+  - "ZXR10 5960X 产品资料：支持 VXLAN，具体配置命令需以对应版本配置手册为准"

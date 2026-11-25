@@ -5,8 +5,9 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-command: "vlan {vlan_id}"
-view: system-view
+segments:
+  - path: ["vlan {vlan_id}"]
+    lines: []
 verified: true
 warnings:
   - "VLAN 名称需进入 VLAN 视图后使用 name 命令配置，当前仅翻译创建命令"

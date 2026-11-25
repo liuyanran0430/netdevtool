@@ -1,0 +1,35 @@
+entity_id: vxlan_nve
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: high
+pre_commands:
+  - view: vxlan
+    command: "global-vxlan enable"
+  - view: configure terminal
+    command: "mpls l2vpn enable"
+segments:
+  - key: [tunnel_id]
+    each: peers
+    path: ["vxlan", "vni-instance {vni}"]
+    header_entity: true
+    lines:
+      - text: "tunnel {tunnel_id}"
+  - key: [tunnel_id]
+    path: ["interface vxlan_tunnel {tunnel_id}"]
+    lines:
+      - text: "tunnelmode ipv4"
+      - text: "tunnelsource ipv4 {source_ip}"
+      - text: "tunneldestination ipv4 {peer_ip}"
+        each: peers
+verified: true
+warnings:
+  - "中兴 VTEP 源地址命令依据有限，请按对应版本配置手册核对关键字与视图"
+  - "源地址变更会导致已有 VXLAN 隧道重建"
+  - "中兴远端 VTEP 命令依据有限，请按对应版本配置手册核对关键字与视图"
+  - "中兴按 VNI 实例绑定隧道，与华为 head-end peer-list 语义不完全等价，需人工确认"
+sources:
+  - "ZXR10 5960X VXLAN 配置：vxlan 视图下指定 VTEP 源地址（待手册核对）"
+  - "ZXR10 5960X VXLAN 配置：VNI 实例绑定隧道并指定远端 VTEP（待手册核对）"

@@ -20,8 +20,9 @@ const sourceEditor = (page: import('@playwright/test').Page) =>
 const combobox = (page: import('@playwright/test').Page, index: number) =>
   page.getByRole('combobox').nth(index);
 
+// Ant Design 会在两个汉字的按钮中间插入空格（翻 译），用正则兼容
 const translateButton = (page: import('@playwright/test').Page) =>
-  page.getByRole('button', { name: '翻译', exact: true });
+  page.getByRole('button', { name: /^翻\s*译$/ });
 
 test.describe('配置翻译', () => {
   test.beforeEach(async ({ page }) => {
@@ -82,7 +83,7 @@ test.describe('配置翻译', () => {
     await expect(
       page.getByRole('button', { name: '重新翻译' }),
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: /^导出/ })).toBeEnabled();
+    await expect(page.getByRole('button', { name: /导\s*出配置/ })).toBeEnabled();
 
     expect(posted).toMatchObject({
       source_text: SOURCE_TEXT,

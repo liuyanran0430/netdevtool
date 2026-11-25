@@ -5,9 +5,10 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "portswitch"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "portswitch"
 verified: true
 sources:
   - "华为 VRP 接口视图：portswitch 切换为二层，undo portswitch 切换为三层"

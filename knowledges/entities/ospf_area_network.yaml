@@ -17,6 +17,8 @@ parameters:
     type: string
     required: true
     note: "反掩码，例如 0.0.0.255 对应 /24 网段"
+collections:
+  networks: [network, wildcard_mask]
 semantic_notes:
   - "华为/华三的结构是先进入 area 视图，再写 network <ip> <wildcard>；这是两者共有的视图层级设计"
   - "OSPF 进程号两端可以不同，但区域 ID 必须匹配才能建立邻居"

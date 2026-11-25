@@ -5,9 +5,10 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "ospf {process_id} area {area_id}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "ospf {process_id} area {area_id}"
 verified: true
 warnings:
   - "接口名未做厂商映射，需确认目标设备实际接口命名"

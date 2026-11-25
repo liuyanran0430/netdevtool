@@ -7,9 +7,10 @@ supported: true
 confidence: high
 pre_commands:
   - "switchport mode access"
-view_path: ["interface {intf}"]
-command: "switchport access vlan {vlan_id}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "switchport access vlan {vlan_id}"
 verified: true
 sources:
   - "ZXR10 5960X 配置指导 V6.00.03.94 §2.4.3 (配置SwitchVLAN)"

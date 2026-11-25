@@ -1,0 +1,15 @@
+entity_id: bgp_process
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: medium
+segments:
+  - path: ["bgp {local_as}"]
+    lines: []
+verified: false
+warnings:
+  - "仅覆盖 BGP 进程创建；router-id、address-family 与 peer 需另行配置"
+sources:
+  - "华为 VRP BGP 配置：系统视图下 bgp as-number 创建 BGP 进程并进入 BGP 视图"

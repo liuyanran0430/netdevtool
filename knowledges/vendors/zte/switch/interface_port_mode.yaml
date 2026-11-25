@@ -4,11 +4,12 @@ device_type: switch
 product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
-confidence: medium
-view_path: ["interface {intf}"]
-command: "no router-interface"
-negative_command: "router-interface"
-view: interface
+confidence: high
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "no router-interface"
+        negative_text: "router-interface"
 verified: true
 sources:
   - "ZXR10 5960X 接口视图：no router-interface / router-interface"

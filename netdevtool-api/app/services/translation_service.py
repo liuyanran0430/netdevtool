@@ -18,7 +18,7 @@ from app.schemas import (
     TranslationListItem,
     TranslationOut,
     TranslationResult,
-    TranslationResultLine,
+    TranslationResultLines,
     TranslationResultSummary,
     TranslationSourceOut,
     TranslationWarning,
@@ -214,44 +214,53 @@ def _translate(
         registry=registry,
     )
 
-    entity_ids: list[str] = []
-    for line in output.lines:
-        if line.entity_id and line.entity_id not in entity_ids:
-            entity_ids.append(line.entity_id)
-
-    entities: list[TranslationEntityInfo] = []
-    for entity_id in entity_ids:
+    # 按 entity_targets 构建：每个实体的联动元数据（source_nos + target_line_indices）
+    entity_list: list[TranslationEntityInfo] = []
+    for entity_id, target in output.entity_targets.items():
         spec = registry.get_entity(entity_id)
-        entities.append(
+        entity_list.append(
             TranslationEntityInfo(
                 id=entity_id,
+                source_nos=list(target.source_nos),
+                command_nos=list(target.command_nos),
+                target_line_indices=list(target.target_line_indices),
                 description=spec.description if spec else None,
+            )
+        )
+
+    # 告警关联 entity_id：warning.no 与 entity.source_nos 做交集匹配
+    entity_source_nos_map = {
+        entity_id: set(target.source_nos)
+        for entity_id, target in output.entity_targets.items()
+    }
+    warnings_out: list[TranslationWarning] = []
+    for warning in output.warnings:
+        # 找出 source_nos 与 warning.no 有交集的 entity
+        warning_nos = set(warning.no)
+        matched_entity_id: str | None = None
+        for eid, source_nos in entity_source_nos_map.items():
+            if warning_nos & source_nos:
+                matched_entity_id = eid
+                break
+        warnings_out.append(
+            TranslationWarning(
+                entity_id=matched_entity_id,
+                no=list(warning.no),
+                message=warning.message,
+                code=warning.code,
+                severity=warning.severity,
             )
         )
 
     return (
         TranslationResult(
             lines=[
-                TranslationResultLine(
-                    no=line.no,
-                    text=line.text,
-                    tone=line.tone,
-                    source_no=line.source_no,
-                    entity_id=line.entity_id,
-                )
+                TranslationResultLines(text=line.text, tone=line.tone)
                 for line in output.lines
             ],
-            warnings=[
-                TranslationWarning(
-                    no=warning.no,
-                    message=warning.message,
-                    code=warning.code,
-                    severity=warning.severity,
-                    reason=warning.reason,
-                )
-                for warning in output.warnings
-            ],
-            entities=entities,
+            line_source_nos=list(output.line_source_nos),
+            entities=entity_list,
+            warnings=warnings_out,
             summary=TranslationResultSummary(
                 total=output.summary["total"],
                 duration_ms=output.summary["duration_ms"],

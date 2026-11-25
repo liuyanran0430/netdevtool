@@ -1,0 +1,13 @@
+entity_id: bgp_router_id
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: false
+confidence: medium
+unsupported_reason: "ZXR10 的 router-id 与 OSPF 共用 router 视图，当前解析器按视图类型匹配，无法区分归属，自动生成会误改 OSPF 配置，故暂不生成"
+verified: false
+warnings:
+  - "请根据所在进程（router bgp / router ospf）人工确认 router-id 归属"
+sources:
+  - "ZXR10 交换机 BGP 配置：BGP 配置模式下 router-id ipv4-address"

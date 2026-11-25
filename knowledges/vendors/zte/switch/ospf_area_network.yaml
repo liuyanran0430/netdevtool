@@ -5,9 +5,12 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
-view_path: ["router ospf {process_id}"]
-command: "network {network} {wildcard_mask} area {area_id}"
-view: ospf
+segments:
+  - key: [process_id, area_id]
+    path: ["router ospf {process_id}"]
+    lines:
+      - text: "network {network} {wildcard_mask} area {area_id}"
+        each: networks
 verified: true
 warnings:
   - "ZXR10 无独立 area 子视图，区域网段通过 network ip wildcard-mask area area-id 单行宣告，需现场核对命令顺序"

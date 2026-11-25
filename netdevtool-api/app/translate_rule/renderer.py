@@ -1,16 +1,26 @@
-"""命令渲染：用目标厂商实现替换参数，并按视图层级输出。"""
+"""目标配置渲染：展开段与集合，合并重复段并保持对外结果结构。"""
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from app.translate_rule.models import (
     PLACEHOLDER_RE,
     EntitySpec,
+    Implementation,
     ParameterType,
+    PreCommand,
     ValueFormat,
     VendorProfile,
+    split_optional_chunks,
 )
-from app.translate_rule.parser import IPV4_PATTERN, VLAN_LIST_PATTERN, ParsedLine, _view_type
+from app.translate_rule.parser import (
+    IPV4_PATTERN,
+    VLAN_LIST_PATTERN,
+    ParsedDocument,
+    ParsedEntity,
+    ParsedLine,
+    _view_type,
+)
 from app.translate_rule.registry import KnowledgeRegistry
 
 TONE_SUCCESS = "success"
@@ -28,54 +38,84 @@ _DISPLAY_CHANGED_MESSAGE = "显示命令关键字已转换，参数语法请按�
 
 
 def _confidence_tone(confidence: str) -> str:
-    """置信度映射：high → success，medium → warn，low → error。"""
     return _TONE_BY_CONFIDENCE.get(confidence.strip().lower(), TONE_WARN)
 
 
 def _degrade(tone: str, target: str) -> str:
-    """只允许向更严重的状态降级。"""
     return target if _TONE_RANK[target] > _TONE_RANK[tone] else tone
 
 
-@dataclass(frozen=True)
-class RenderedLine:
-    """输出行，`no` 对齐源配置行号。"""
+def _warning_nos(entity: ParsedEntity) -> tuple[int, ...]:
+    """实体级告警锚定自身命令行；无命令行的占位实体回退全部关联行。"""
+    return tuple(entity.command_nos) if entity.command_nos else tuple(entity.source_nos)
 
-    no: int
+
+@dataclass(frozen=True)
+class RenderedLines:
+    """渲染输出的一行纯文本，顺序即目标配置顺序。
+
+    源端行号、实体归属等联动信息统一在 TranslationOutput.entity_targets 中维护。
+    """
+
     text: str
     tone: str
-    # 真实源配置行号；生成行（补齐的视图/quit/return）为 None
-    source_no: int | None = None
-    # 该行对应的规范实体，供前端展示实体描述；视图/注释等行不关联
-    entity_id: str | None = None
+
+
+@dataclass(frozen=True)
+class EntityTarget:
+    """单个已翻译实体的联动元数据。"""
+
+    entity_id: str
+    # 该实体覆盖的源配置行号（parser 已算干净，不含外层无关视图）
+    source_nos: tuple[int, ...]
+    # 实体自身命令行号（不含视图头行），前端据此区分视图行与命令行
+    command_nos: tuple[int, ...] = ()
+    # 该实体在目标输出中对应的行号索引（共享视图行会同时归属多个实体）
+    target_line_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class RenderWarning:
-    """行级告警，供前端定位与按类型聚合。"""
+    """段级告警，`no` 为该告警覆盖的全部源配置行号列表。"""
 
-    no: int
+    no: tuple[int, ...]
     message: str
     code: str = "unknown"
     severity: str = "warn"
-    # 细分原因，目前用于 unsupported_entity 的三种成因
-    reason: str | None = None
 
 
 @dataclass
 class TranslationOutput:
     """一次渲染的完整产物。"""
 
-    lines: list[RenderedLine] = field(default_factory=list)
+    lines: list[RenderedLines] = field(default_factory=list)
+    # 与 lines 平行的源行号映射：无实体行（未识别命令、显示命令）记录其源行号，其余为 None
+    line_source_nos: list[int | None] = field(default_factory=list)
+    # 按实体分组的联动元数据：source_nos → 源面板高亮，target_line_indices → 目标面板高亮
+    entity_targets: dict[str, EntityTarget] = field(default_factory=dict)
     warnings: list[RenderWarning] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
     meta: dict[str, object] = field(default_factory=dict)
-    # 解析中间结果，供知识缺口采集使用，不对外输出
     parsed_lines: list[ParsedLine] = field(default_factory=list, repr=False)
 
 
+@dataclass(frozen=True)
+class _CandidateSegment:
+    path: tuple[str, ...]
+    lines: tuple[str, ...]
+
+
+@dataclass
+class _PreparedParams:
+    params: dict[str, str]
+    collections: dict[str, list[dict[str, str]]]
+    has_intf: bool = False
+    intf_mapped: bool = False
+    intf_unmapped: bool = False
+
+
 class Renderer:
-    """把解析结果渲染为目标厂商命令。"""
+    """把段级解析结果渲染为目标厂商命令。"""
 
     def __init__(
         self,
@@ -92,383 +132,602 @@ class Renderer:
         self._source_vendor = source_vendor.strip().lower() if source_vendor else None
         self._source_device_type = source_device_type.strip().lower() if source_device_type else None
         self._profile = registry.get_profile(self._target_vendor, self._target_device_type)
-        templates: list[str] = []
-        for impl in registry.implementations_for(self._target_vendor, self._target_device_type):
-            templates.extend(impl.view_path)
-        self._view_templates = list(dict.fromkeys(templates))
-        # 目标厂商的根视图（如 system-view / configure terminal），输出时只进入一次
         self._root_view = self._profile.root_view
 
-    def _relative_views(self, templates: list[str]) -> list[str]:
-        """去掉模板里重复书写的根视图，视图路径统一从根视图之后开始。"""
-        if templates and templates[0].strip().lower() == self._root_view:
-            return list(templates[1:])
-        return list(templates)
-
-    def render(self, parsed_lines: list[ParsedLine], duration_ms: int = 0) -> TranslationOutput:
-        output = TranslationOutput()
+    def render(self, document: ParsedDocument, duration_ms: int = 0) -> TranslationOutput:
+        output = TranslationOutput(parsed_lines=document.lines)
+        self._view_line_index: dict[tuple[str, ...], int] = {}
+        self._last_entity: ParsedEntity | None = None
+        # 已报过接口映射告警的目标接口名，每个接口只报一条
+        self._intf_notified: set[str] = set()
+        # 预创建所有实体的联动元数据；渲染过程中 target_line_indices 逐步填充。
+        # 否定行等会创建同 ID 的独立实体，这里按 entity_id 合并归属取并集，
+        # 使否定行与正向行联动到同一实体，避免后者覆盖前者的归属
+        for entity in document.entities:
+            existing = output.entity_targets.get(entity.entity_id)
+            if existing is None:
+                output.entity_targets[entity.entity_id] = EntityTarget(
+                    entity_id=entity.entity_id,
+                    source_nos=tuple(entity.source_nos),
+                    command_nos=tuple(entity.command_nos),
+                )
+            else:
+                merged_nos = sorted(set(existing.source_nos) | set(entity.source_nos))
+                merged_cmds = sorted(set(existing.command_nos) | set(entity.command_nos))
+                output.entity_targets[entity.entity_id] = replace(
+                    existing,
+                    source_nos=tuple(merged_nos),
+                    command_nos=tuple(merged_cmds),
+                )
         output.meta = {
             "source": {"vendor": self._source_vendor, "device_type": self._source_device_type},
             "target": {"vendor": self._target_vendor, "device_type": self._target_device_type},
         }
-        translated = 0
-        unsupported = 0
-        used: list[str] = []
+        for issue in document.issues:
+            output.warnings.append(
+                RenderWarning((issue.source_no,), issue.message, issue.code, issue.severity)
+            )
+
         current_view_path: list[str] = []
-        # 当前视图内已输出的命令，用于避免前置命令与独立实体重复输出
-        emitted: set[str] = set()
-        # 翻译一开始就进入目标厂商根视图，后续只需补齐相对视图
+        emitted: set[tuple[tuple[str, ...], str]] = set()
+        pre_emitted: set[tuple[tuple[str, ...], str]] = set()
+        entities_by_source: dict[int, list[ParsedEntity]] = {}
+        for entity in document.entities:
+            entities_by_source.setdefault(entity.source_no, []).append(entity)
+
         first_item = next(
-            (
-                item
-                for item in parsed_lines
-                if item.kind in {"command", "display", "other"}
-            ),
+            (item for item in document.lines if item.kind in {"command", "display", "other"}),
             None,
         )
         if first_item is not None:
-            output.lines.append(
-                RenderedLine(first_item.no, self._root_view, TONE_MUTED)
-            )
+            self._emit(output, RenderedLines(self._root_view, TONE_MUTED))
             current_view_path = [self._root_view]
 
-        for item in parsed_lines:
-            if item.kind in {"view", "pre"}:
-                # 视图指令与 pre 行不直接输出，由渲染器按目标视图差异补齐
+        for item in document.lines:
+            for entity in entities_by_source.get(item.no, []):
+                current_view_path, _ = self._render_entity(
+                    output,
+                    entity,
+                    current_view_path,
+                    emitted,
+                    pre_emitted,
+                )
+
+            if item.kind in {"view", "pre", "command"}:
                 continue
             if item.kind == "display":
-                # 显示命令只替换关键字，但需要先补齐它所在的视图
                 actual_prefix = item.text.strip().split(maxsplit=1)[0].lower()
                 tone = TONE_MUTED
                 if actual_prefix != self._profile.display_prefix:
                     tone = TONE_WARN
                     output.warnings.append(
                         RenderWarning(
-                            item.no, _DISPLAY_CHANGED_MESSAGE, "display_command", "warn"
+                            (item.no,), _DISPLAY_CHANGED_MESSAGE, "display_command", "warn"
                         )
                     )
                 target_view_path = self._display_view_path(item, current_view_path)
-                if target_view_path != current_view_path:
-                    emitted.clear()
                 current_view_path = self._sync_view_path(
-                    output, item, current_view_path, target_view_path
+                    output, item.no, current_view_path, target_view_path
                 )
-                indent = (
-                    "  " * max(0, len(current_view_path) - 1) if current_view_path else ""
-                )
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
+                indent = "  " * max(0, len(current_view_path) - 1)
+                self._emit(
+                    output,
+                    RenderedLines(
                         indent + _translate_display(item.text, self._profile),
                         tone,
-                        item.no,
-                    )
+                    ),
+                    source_no=item.no,
                 )
                 continue
             if item.kind == "other":
-                # 未识别的命令原样保留，标记 error 提示人工处理
-                output.lines.append(RenderedLine(item.no, item.text, TONE_ERROR, item.no))
+                if current_view_path:
+                    current_view_path = self._sync_view_path(
+                        output, item.no, current_view_path, [self._root_view]
+                    )
+                self._emit(output, RenderedLines(item.text, TONE_ERROR), source_no=item.no)
                 output.warnings.append(
-                    RenderWarning(item.no, "未识别的命令，已原样保留", "unknown_command", "error")
+                    RenderWarning((item.no,), "未识别的命令，已原样保留", "unknown_command", "error")
                 )
-                unsupported += 1
                 continue
             if item.kind in {"blank", "comment"}:
-                if item.kind == "comment" and item.text.strip() in {"#", "!"} and current_view_path:
-                    # 分节符已回到系统视图，后续命令无需再补齐 quit
-                    current_view_path = [self._root_view]
-                    emitted.clear()
-                output.lines.append(RenderedLine(item.no, item.text, TONE_MUTED, item.no))
+                # 空行与 # / ! 注释行均不进入目标配置
                 continue
-
-            entity = item.entity
-            if entity is None:
-                output.lines.append(RenderedLine(item.no, item.text, TONE_MUTED, item.no))
-                continue
-
-            spec = self._registry.get_entity(entity.entity_id)
-            implementation = self._registry.resolve(
-                self._target_vendor, self._target_device_type, entity.entity_id
-            )
-            if spec is None or implementation is None or not implementation.supported:
-                if spec is None:
-                    reason = "entity_missing"
-                elif implementation is None:
-                    reason = "missing_impl"
-                else:
-                    reason = "explicit_unsupported"
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
-                        f"# 目标设备不支持: {entity.entity_id}",
-                        TONE_ERROR,
-                        item.no,
-                        entity.entity_id,
-                    )
-                )
-                output.warnings.append(
-                    RenderWarning(
-                        item.no,
-                        "目标设备不支持该实体",
-                        "unsupported_entity",
-                        "error",
-                        reason,
-                    )
-                )
-                unsupported += 1
-                continue
-
-            errors = _validate_parameters(spec, entity.params, allow_missing=entity.negative)
-            if errors:
-                message = "；".join(errors)
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
-                        f"# 参数校验失败: {entity.entity_id}（{message}）",
-                        TONE_ERROR,
-                        item.no,
-                        entity.entity_id,
-                    )
-                )
-                output.warnings.append(
-                    RenderWarning(item.no, message, "invalid_param", "error")
-                )
-                unsupported += 1
-                continue
-
-            # 按目标厂商习惯转换参数分隔符（如 VLAN 列表 to / hyphen）
-            params = _apply_param_formats(entity.params, implementation.param_formats)
-            # 按目标厂商取值映射转换参数（如 stp → sstp）
-            params = _apply_param_values(params, implementation.param_values)
-
-            cross_vendor = bool(
-                self._source_vendor and self._source_vendor != self._target_vendor
-            )
-            # 跨厂商时按接口命名表重写 intf，未识别类型则原样保留
-            intf_mapped = False
-            if cross_vendor and params.get("intf") and self._source_device_type:
-                mapped, intf_mapped = self._registry.map_interface(
-                    params["intf"],
-                    source_vendor=self._source_vendor,
-                    source_device_type=self._source_device_type,
-                    target_vendor=self._target_vendor,
-                    target_device_type=self._target_device_type,
-                )
-                params = {**params, "intf": mapped}
-
-            # 厂商实现可覆盖规范视图结构（如中兴 router ospf 无 area 子视图）
-            view_templates = self._relative_views(implementation.view_path)
-            view_path = [
-                self._root_view,
-                *(_render_template(template, params) for template in view_templates),
-            ]
-            if not view_path and implementation.view:
-                view_path = [implementation.view]
-
-            common = _common_prefix(current_view_path, view_path)
-            if not self._profile.allow_direct_view_switch:
-                for level in range(len(current_view_path), common, -1):
-                    output.lines.append(
-                        RenderedLine(
-                            item.no,
-                            "  " * (max(0, level - 2) + 1) + self._profile.view_exit,
-                            TONE_MUTED,
-                        )
-                    )
-            for depth in range(common, len(view_path)):
-                view_tone = TONE_MUTED
-                # view_path[0] 是根视图，相对模板从 depth-1 开始对齐
-                template = (
-                    view_templates[depth - 1]
-                    if 0 <= depth - 1 < len(view_templates)
-                    else None
-                )
-                # 视图行的源行号：进入该视图的那一行，warning 也挂在该行上
-                view_source_no = (
-                    (item.view_nos or {}).get(_view_type(template))
-                    if template is not None
-                    else None
-                )
-                if cross_vendor and template is not None and "{intf}" in template:
-                    # 接口名经过厂商转换或无法识别，均按 medium 置信度提示复核
-                    view_tone = TONE_WARN
-                    message, code = (
-                        (_INTF_MAPPED_MESSAGE, "intf_translated")
-                        if intf_mapped
-                        else (_INTF_UNMAPPED_MESSAGE, "intf_unmapped")
-                    )
-                    output.warnings.append(
-                        RenderWarning(
-                            view_source_no if view_source_no is not None else item.no,
-                            message,
-                            code,
-                            "warn",
-                        )
-                    )
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
-                        "  " * max(0, depth - 1) + view_path[depth],
-                        view_tone,
-                        view_source_no,
-                    )
-                )
-            if view_path != current_view_path:
-                # 切换到其它视图后重新统计已输出命令
-                emitted.clear()
-            current_view_path = view_path
-            indent = "  " * max(0, len(view_path) - 1) if view_path else ""
-
-            # 删除命令只输出目标命令本身，不补前置/子命令
-            for pre_command in [] if entity.negative else implementation.pre_commands:
-                pre_text = _render_template(pre_command, params)
-                key = _normalize_command(pre_text)
-                if key in emitted:
-                    # 该命令已作为独立实体输出，不再重复补前置
-                    continue
-                emitted.add(key)
-                pre_tone = TONE_SUCCESS
-                if cross_vendor and not intf_mapped and "{intf}" in pre_command:
-                    pre_tone = TONE_WARN
-                    output.warnings.append(
-                        RenderWarning(
-                            item.no, _INTF_UNMAPPED_MESSAGE, "intf_unmapped", "warn"
-                        )
-                    )
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
-                        indent + pre_text,
-                        pre_tone,
-                        item.no,
-                        entity.entity_id,
-                    )
-                )
-
-            tone = _confidence_tone(implementation.confidence)
-            if self._source_vendor and self._source_device_type:
-                source_impl = self._registry.resolve(
-                    self._source_vendor, self._source_device_type, entity.entity_id
-                )
-                if source_impl is not None:
-                    # 两侧置信度取低值，避免源侧不确定而结果看似高可信
-                    tone = _degrade(tone, _confidence_tone(source_impl.confidence))
-            if implementation.origin == "supplement":
-                # 补充知识库命中：结果永远降级为 warn，并标记来源
-                tone = _degrade(tone, TONE_WARN)
-                output.warnings.append(
-                    RenderWarning(
-                        item.no,
-                        f"{entity.entity_id}：命中补充知识库，结果未经验证",
-                        "supplement_applied",
-                        "warn",
-                    )
-                )
-            elif not implementation.verified:
-                tone = _degrade(tone, TONE_WARN)
-                output.warnings.append(
-                    RenderWarning(
-                        item.no,
-                        f"{entity.entity_id}：{self._target_vendor} 实现未经验证",
-                        "unverified_impl",
-                        "warn",
-                    )
-                )
-            elif implementation.confidence.strip().lower() in {"medium", "low"}:
-                output.warnings.append(
-                    RenderWarning(
-                        item.no,
-                        f"{entity.entity_id}：目标实现置信度为 {implementation.confidence}，需人工确认",
-                        "low_confidence",
-                        "warn",
-                    )
-                )
-            if cross_vendor and not intf_mapped and "{intf}" in (implementation.command or ""):
-                tone = _degrade(tone, TONE_WARN)
-                output.warnings.append(
-                    RenderWarning(
-                        item.no, _INTF_UNMAPPED_MESSAGE, "intf_unmapped", "warn"
-                    )
-                )
-
-            command = _render_template(implementation.command or "", params)
-            if entity.negative:
-                # 否定语义：优先使用厂商的独立删除命令，否则按前缀生成，不补子命令、不进入视图
-                if implementation.negative_command:
-                    negative_text = _render_template(implementation.negative_command, params)
-                else:
-                    negative_text = self._profile.negation_prefix + " " + command
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
-                        indent + negative_text,
-                        tone,
-                        item.no,
-                        entity.entity_id,
-                    )
-                )
-                translated += 1
-                if entity.entity_id not in used:
-                    used.append(entity.entity_id)
-                continue
-            output.lines.append(
-                RenderedLine(item.no, indent + command, tone, item.no, entity.entity_id)
-            )
-            if command:
-                emitted.add(_normalize_command(command))
-
-            # 命令本身可能同时进入子视图（如 ospf 1 router-id x / router ospf 1）
-            entered_view = (
-                self._match_entered_view(command, params) if len(view_path) <= 1 else None
-            )
-            if entered_view:
-                current_view_path = [*view_path, entered_view]
-                inner_indent = "  " * max(0, len(current_view_path) - 1)
-                for extra in implementation.sub_commands:
-                    extra_text = _render_template(extra, params)
-                    if PLACEHOLDER_RE.search(extra_text) or extra_text in command:
-                        continue
-                    output.lines.append(
-                        RenderedLine(
-                            item.no,
-                            inner_indent + extra_text,
-                            tone,
-                            item.no,
-                            entity.entity_id,
-                        )
-                    )
-
-            translated += 1
-            if entity.entity_id not in used:
-                used.append(entity.entity_id)
 
         if self._profile.auto_close_views and current_view_path:
-            last_no = parsed_lines[-1].no if parsed_lines else 0
             for level in range(len(current_view_path), 1, -1):
-                output.lines.append(
-                    RenderedLine(
-                        last_no,
+                self._emit(
+                    output,
+                    RenderedLines(
                         "  " * (max(0, level - 2) + 1) + self._profile.view_exit,
                         TONE_MUTED,
-                    )
+                    ),
                 )
-            output.lines.append(
-                RenderedLine(last_no, self._profile.view_return, TONE_MUTED)
-            )
+        if self._profile.auto_close_views and current_view_path:
+            self._emit(output, RenderedLines(self._profile.view_return, TONE_MUTED))
 
         output.summary = {
             "total": len(output.lines),
-            "translated": translated,
-            "unsupported": unsupported,
             "duration_ms": duration_ms,
         }
-        output.meta["entities_used"] = used
         return output
+
+    def _render_entity(
+        self,
+        output: TranslationOutput,
+        entity: ParsedEntity,
+        current_view_path: list[str],
+        emitted: set[tuple[tuple[str, ...], str]],
+        pre_emitted: set[tuple[tuple[str, ...], str]],
+    ) -> tuple[list[str], bool]:
+        spec = self._registry.get_entity(entity.entity_id)
+        implementation = self._registry.resolve(
+            self._target_vendor, self._target_device_type, entity.entity_id
+        )
+        if spec is None or implementation is None or not implementation.supported:
+            self._emit(
+                output,
+                RenderedLines(
+                    f"# 目标设备不支持: {entity.entity_id}",
+                    TONE_ERROR,
+                ),
+                entity,
+            )
+            output.warnings.append(
+                RenderWarning(
+                    _warning_nos(entity),
+                    "目标设备不支持该实体",
+                    "unsupported_entity",
+                    "error",
+                )
+            )
+            return current_view_path, False
+        if entity.invalid:
+            self._emit(
+                output,
+                RenderedLines(
+                    f"# 配置段冲突: {entity.entity_id}",
+                    TONE_ERROR,
+                ),
+                entity,
+            )
+            return current_view_path, False
+
+        prepared, errors = self._prepare_parameters(spec, implementation, entity, output)
+        if errors:
+            return current_view_path, self._invalid_entity(output, entity, errors)
+        tone = self._entity_tone(output, entity, implementation)
+        if prepared.has_intf:
+            # 接口名被规则转换过，值得人工确认；告警只报一次并只锚定接口视图头行，命令行不因此降级
+            mapped = prepared.intf_mapped and not prepared.intf_unmapped
+            intf_key = prepared.params.get("intf", "")
+            if intf_key and intf_key not in self._intf_notified:
+                self._intf_notified.add(intf_key)
+                header_nos = tuple(sorted(set(entity.source_nos) - set(entity.command_nos)))
+                output.warnings.append(
+                    RenderWarning(
+                        header_nos or _warning_nos(entity),
+                        _INTF_MAPPED_MESSAGE if mapped else _INTF_UNMAPPED_MESSAGE,
+                        "intf_translated" if mapped else "intf_unmapped",
+                        "warn",
+                    )
+                )
+
+        if entity.negative:
+            return self._render_negative(
+                output, entity, implementation, prepared, current_view_path, tone
+            )
+
+        candidates, errors = self._expand_candidates(implementation, prepared)
+        pre_texts, pre_errors = self._pre_command_texts(implementation, prepared.params)
+        errors.extend(pre_errors)
+        if errors:
+            return current_view_path, self._invalid_entity(output, entity, errors)
+
+        current_view_path = self._render_scoped_pre_commands(
+            output,
+            entity,
+            implementation,
+            pre_texts,
+            current_view_path,
+            emitted,
+            pre_emitted,
+            tone,
+        )
+        local_pre_done = False
+        view_tone = TONE_WARN if prepared.has_intf else TONE_MUTED
+        for candidate in candidates:
+            target_path = [self._root_view, *candidate.path]
+            current_view_path = self._sync_view_path(
+                output,
+                entity.source_no,
+                current_view_path,
+                target_path,
+                new_view_tone=view_tone,
+                entity=entity,
+            )
+            indent = "  " * max(0, len(current_view_path) - 1)
+            if not local_pre_done:
+                for text in pre_texts[1]:
+                    key = (tuple(target_path), _normalize_command(text))
+                    if key not in emitted:
+                        emitted.add(key)
+                        self._emit(
+                            output,
+                            RenderedLines(
+                                indent + text,
+                                tone,
+                            ),
+                            entity,
+                        )
+                local_pre_done = True
+            for text in candidate.lines:
+                key = (tuple(target_path), _normalize_command(text))
+                if key in emitted:
+                    continue
+                emitted.add(key)
+                self._emit(
+                    output,
+                    RenderedLines(
+                        indent + text,
+                        tone,
+                    ),
+                    entity,
+                )
+        return current_view_path, bool(candidates)
+
+    def _prepare_parameters(
+        self,
+        spec: EntitySpec,
+        implementation: Implementation,
+        entity: ParsedEntity,
+        output: TranslationOutput,
+    ) -> tuple[_PreparedParams, list[str]]:
+        collection_fields = {
+            name for fields in spec.collections.values() for name in fields
+        }
+        scalar_fields = set(spec.parameters) - collection_fields
+        params = _apply_param_defaults(
+            spec,
+            entity.params,
+            entity.source_no,
+            entity.entity_id,
+            output,
+            fields=scalar_fields,
+        )
+        errors = _validate_parameters(
+            spec,
+            params,
+            allow_missing=entity.negative,
+            fields=scalar_fields,
+        )
+        prepared = _PreparedParams(params={}, collections={})
+        required_collections = {
+            item.each
+            for segment in implementation.segments
+            for item in [segment, *segment.lines]
+            if item.each
+        }
+        canonical_collections: dict[str, list[dict[str, str]]] = {}
+        if not entity.negative:
+            for collection in required_collections:
+                records = entity.collections.get(collection, [])
+                if not records:
+                    errors.append(f"缺少集合 {collection}")
+                    continue
+                fields = set(spec.collections[collection])
+                resolved_records = []
+                for index, record in enumerate(records, start=1):
+                    merged = {**entity.params, **record}
+                    resolved = _apply_param_defaults(
+                        spec,
+                        merged,
+                        entity.source_no,
+                        entity.entity_id,
+                        output,
+                        fields=fields,
+                    )
+                    values = {
+                        name: resolved[name] for name in fields if resolved.get(name) is not None
+                    }
+                    record_errors = _validate_parameters(spec, values, fields=fields)
+                    errors.extend(
+                        f"集合 {collection}[{index}]：{message}" for message in record_errors
+                    )
+                    resolved_records.append(values)
+                canonical_collections[collection] = resolved_records
+
+        prepared.params = self._convert_params(params, implementation)
+        for collection, records in canonical_collections.items():
+            prepared.collections[collection] = [
+                self._convert_params(record, implementation) for record in records
+            ]
+        self._map_prepared_interfaces(prepared)
+        return prepared, errors
+
+    def _convert_params(
+        self, params: dict[str, str], implementation: Implementation
+    ) -> dict[str, str]:
+        converted = _apply_param_formats(params, implementation.param_formats)
+        return _apply_param_values(converted, implementation.param_values)
+
+    def _map_prepared_interfaces(self, prepared: _PreparedParams) -> None:
+        cross_vendor = bool(self._source_vendor and self._source_vendor != self._target_vendor)
+
+        def map_params(params: dict[str, str]) -> dict[str, str]:
+            if "intf" not in params:
+                return params
+            prepared.has_intf = True
+            if not cross_vendor or not self._source_device_type:
+                return params
+            mapped, success = self._registry.map_interface(
+                params["intf"],
+                source_vendor=self._source_vendor or "",
+                source_device_type=self._source_device_type,
+                target_vendor=self._target_vendor,
+                target_device_type=self._target_device_type,
+            )
+            prepared.intf_mapped |= success
+            prepared.intf_unmapped |= not success
+            return {**params, "intf": mapped}
+
+        prepared.params = map_params(prepared.params)
+        for collection, records in prepared.collections.items():
+            prepared.collections[collection] = [map_params(record) for record in records]
+
+    def _expand_candidates(
+        self, implementation: Implementation, prepared: _PreparedParams
+    ) -> tuple[list[_CandidateSegment], list[str]]:
+        candidates: list[_CandidateSegment] = []
+        errors: list[str] = []
+        for segment in implementation.segments:
+            segment_records = (
+                prepared.collections.get(segment.each, []) if segment.each else [{}]
+            )
+            for segment_record in segment_records:
+                params = {**prepared.params, **segment_record}
+                templates = self._relative_views(segment.path)
+                path = tuple(_render_template(template, params) for template in templates)
+                missing = sorted(
+                    {
+                        name
+                        for text in path
+                        for name in PLACEHOLDER_RE.findall(text)
+                    }
+                )
+                if missing:
+                    errors.append(f"目标视图缺少参数 {', '.join(missing)}")
+                    continue
+                lines: list[str] = []
+                for line in segment.lines:
+                    if line.each:
+                        line_records = (
+                            [segment_record]
+                            if segment.each == line.each
+                            else prepared.collections.get(line.each, [])
+                        )
+                    else:
+                        line_records = [{}]
+                    for line_record in line_records:
+                        line_params = {**params, **line_record}
+                        text = _render_template(line.text, line_params)
+                        if not text.strip():
+                            continue
+                        if PLACEHOLDER_RE.search(text):
+                            missing_names = sorted(set(PLACEHOLDER_RE.findall(text)))
+                            errors.append(
+                                f"目标命令 {line.text} 缺少参数 {', '.join(missing_names)}"
+                            )
+                            continue
+                        if text not in lines:
+                            lines.append(text)
+                candidates.append(_CandidateSegment(path, tuple(lines)))
+
+        unique: list[_CandidateSegment] = []
+        seen: set[_CandidateSegment] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if unique and unique[-1].path == candidate.path:
+                previous = unique[-1]
+                lines = tuple(dict.fromkeys([*previous.lines, *candidate.lines]))
+                unique[-1] = _CandidateSegment(previous.path, lines)
+            else:
+                unique.append(candidate)
+        return unique, errors
+
+    def _pre_command_texts(
+        self, implementation: Implementation, params: dict[str, str]
+    ) -> tuple[tuple[list[tuple[PreCommand, str]], list[str]], list[str]]:
+        scoped: list[tuple[PreCommand, str]] = []
+        local: list[str] = []
+        errors: list[str] = []
+        for pre in implementation.pre_commands:
+            if isinstance(pre, PreCommand) and pre.view:
+                text = _render_template(pre.command, params)
+                if PLACEHOLDER_RE.search(text):
+                    errors.append(f"前置命令缺少参数：{pre.command}")
+                else:
+                    scoped.append((pre, text))
+            else:
+                template = pre if isinstance(pre, str) else pre.command
+                text = _render_template(template, params)
+                if PLACEHOLDER_RE.search(text):
+                    errors.append(f"前置命令缺少参数：{template}")
+                else:
+                    local.append(text)
+        return (scoped, local), errors
+
+    def _render_scoped_pre_commands(
+        self,
+        output: TranslationOutput,
+        entity: ParsedEntity,
+        implementation: Implementation,
+        pre_texts,
+        current_view_path: list[str],
+        emitted: set[tuple[tuple[str, ...], str]],
+        pre_emitted: set[tuple[tuple[str, ...], str]],
+        tone: str,
+    ) -> list[str]:
+        scoped, _ = pre_texts
+        for pre, text in scoped:
+            target_path = [self._root_view, *self._relative_views([pre.view or ""])]
+            target_path = list(dict.fromkeys(target_path))
+            key = (tuple(target_path), _normalize_command(text))
+            if key in pre_emitted:
+                continue
+            pre_emitted.add(key)
+            current_view_path = self._sync_view_path(
+                output, entity.source_no, current_view_path, target_path, entity=entity
+            )
+            self._emit(
+                output,
+                RenderedLines(
+                    "  " * max(0, len(target_path) - 1) + text,
+                    tone,
+                ),
+                entity,
+            )
+            emitted.add(key)
+            current_view_path = self._sync_view_path(
+                output,
+                entity.source_no,
+                current_view_path,
+                [self._root_view],
+                entity=entity,
+            )
+        return current_view_path
+
+    def _render_negative(
+        self,
+        output: TranslationOutput,
+        entity: ParsedEntity,
+        implementation: Implementation,
+        prepared: _PreparedParams,
+        current_view_path: list[str],
+        tone: str,
+    ) -> tuple[list[str], bool]:
+        options: list[tuple[list[str], str]] = []
+        for segment in implementation.segments:
+            if not segment.lines:
+                if entity.negative_each is None and segment.each is None and segment.path:
+                    path = self._relative_views(segment.path)
+                    rendered = [_render_template(item, prepared.params) for item in path]
+                    command = self._profile.negation_prefix + " " + rendered[-1]
+                    options.append((rendered[:-1], command))
+                continue
+            for line in segment.lines:
+                if entity.negative_each:
+                    if line.each != entity.negative_each:
+                        continue
+                elif segment.each is not None or line.each is not None:
+                    continue
+                path = [
+                    _render_template(item, prepared.params)
+                    for item in self._relative_views(segment.path)
+                ]
+                template = line.negative_text or (
+                    self._profile.negation_prefix + " " + line.text
+                )
+                command = _render_template(template, prepared.params)
+                options.append((path, command))
+
+        valid_options = [
+            (path, command)
+            for path, command in options
+            if not any(PLACEHOLDER_RE.search(item) for item in [*path, command])
+        ]
+        if len(valid_options) != 1:
+            message = (
+                "无法唯一确定目标否定命令"
+                if valid_options
+                else "目标否定命令缺少必要参数或对应成员"
+            )
+            return current_view_path, self._invalid_entity(output, entity, [message])
+        path, command = valid_options[0]
+        target_path = [self._root_view, *path]
+        current_view_path = self._sync_view_path(
+            output,
+            entity.source_no,
+            current_view_path,
+            target_path,
+            new_view_tone=TONE_WARN if prepared.has_intf else TONE_MUTED,
+            entity=entity,
+        )
+        self._emit(
+            output,
+            RenderedLines(
+                "  " * max(0, len(target_path) - 1) + command,
+                tone,
+            ),
+            entity,
+        )
+        return current_view_path, True
+
+    def _invalid_entity(
+        self, output: TranslationOutput, entity: ParsedEntity, errors: list[str]
+    ) -> bool:
+        message = "；".join(dict.fromkeys(errors))
+        self._emit(
+            output,
+            RenderedLines(
+                f"# 参数校验失败: {entity.entity_id}（{message}）",
+                TONE_ERROR,
+            ),
+            entity,
+        )
+        output.warnings.append(
+            RenderWarning(_warning_nos(entity), message, "invalid_param", "error")
+        )
+        return False
+
+    def _entity_tone(
+        self,
+        output: TranslationOutput,
+        entity: ParsedEntity,
+        implementation: Implementation,
+    ) -> str:
+        tone = _confidence_tone(implementation.confidence)
+        if self._source_vendor and self._source_device_type:
+            source_impl = self._registry.resolve(
+                self._source_vendor, self._source_device_type, entity.entity_id
+            )
+            if source_impl is not None:
+                tone = _degrade(tone, _confidence_tone(source_impl.confidence))
+        if implementation.origin == "supplement":
+            tone = _degrade(tone, TONE_WARN)
+            output.warnings.append(
+                RenderWarning(
+                    _warning_nos(entity),
+                    f"{entity.entity_id}：命中补充知识库，结果未经验证",
+                    "supplement_applied",
+                    "warn",
+                )
+            )
+        elif not implementation.verified:
+            tone = _degrade(tone, TONE_WARN)
+            output.warnings.append(
+                RenderWarning(
+                    _warning_nos(entity),
+                    f"{entity.entity_id}：{self._target_vendor} 实现未经验证",
+                    "unverified_impl",
+                    "warn",
+                )
+            )
+        elif implementation.confidence.strip().lower() in {"medium", "low"}:
+            output.warnings.append(
+                RenderWarning(
+                    _warning_nos(entity),
+                    f"{entity.entity_id}：目标实现置信度为 {implementation.confidence}，需人工确认",
+                    "low_confidence",
+                    "warn",
+                )
+            )
+        return tone
 
     def _display_view_path(
         self, item: ParsedLine, current_view_path: list[str]
     ) -> list[str]:
-        """按源视图链路定位目标厂商对应视图；无法定位时保持当前视图。"""
         if not item.view_path:
             return list(current_view_path)
         params = dict(item.view_params)
@@ -484,68 +743,100 @@ class Renderer:
         for impl in self._registry.implementations_for(
             self._target_vendor, self._target_device_type
         ):
-            if (impl.view or "").strip().lower() != view_type:
-                continue
-            templates = self._relative_views(impl.view_path)
-            rendered = [_render_template(template, params) for template in templates]
-            if any(PLACEHOLDER_RE.search(text) for text in rendered):
-                continue
-            return [self._root_view, *rendered]
+            for segment in impl.segments:
+                if not segment.path or _view_type(segment.path[-1]) != view_type:
+                    continue
+                templates = self._relative_views(segment.path)
+                rendered = [_render_template(template, params) for template in templates]
+                if any(PLACEHOLDER_RE.search(text) for text in rendered):
+                    continue
+                return [self._root_view, *rendered]
         return list(current_view_path)
+
+    def _relative_views(self, templates: list[str]) -> list[str]:
+        if templates and templates[0].strip().lower() == self._root_view:
+            return list(templates[1:])
+        return list(templates)
+
+    def _emit(
+        self,
+        output: TranslationOutput,
+        line: RenderedLines,
+        entity: ParsedEntity | None = None,
+        source_no: int | None = None,
+    ) -> None:
+        """追加输出行，把新行归属给当前实体（共享视图行可通过 `_claim_line` 事后补归属）。
+
+        `source_no` 为无实体行（未识别命令、显示命令）的源行号，供前端行级联动。
+        """
+        output.lines.append(line)
+        output.line_source_nos.append(source_no)
+        if entity is not None:
+            self._claim_line(output, len(output.lines) - 1, entity)
+
+    def _claim_line(
+        self, output: TranslationOutput, index: int, entity: ParsedEntity
+    ) -> None:
+        """把一条已有输出行归属给某个实体（共享视图行归并时使用）。"""
+        target = output.entity_targets.get(entity.entity_id)
+        if target is None:
+            return
+        indices = set(target.target_line_indices)
+        indices.add(index)
+        output.entity_targets[entity.entity_id] = replace(
+            target, target_line_indices=tuple(sorted(indices))
+        )
 
     def _sync_view_path(
         self,
         output: TranslationOutput,
-        item: ParsedLine,
+        source_no: int,
         current_view_path: list[str],
         target_view_path: list[str],
+        *,
+        new_view_tone: str = TONE_MUTED,
+        entity: ParsedEntity | None = None,
     ) -> list[str]:
-        """输出从当前视图切换到目标视图所需的退出/进入行。"""
         common = _common_prefix(current_view_path, target_view_path)
+        # 复用已打开的视图时，把当前实体并入这些视图行的归属
+        if entity is not None:
+            for depth in range(1, common + 1):
+                index = self._view_line_index.get(tuple(target_view_path[:depth]))
+                if index is not None:
+                    self._claim_line(output, index, entity)
         if not self._profile.allow_direct_view_switch:
             for level in range(len(current_view_path), common, -1):
-                output.lines.append(
-                    RenderedLine(
-                        item.no,
+                self._emit(
+                    output,
+                    RenderedLines(
                         "  " * (max(0, level - 2) + 1) + self._profile.view_exit,
                         TONE_MUTED,
-                    )
+                    ),
+                    self._last_entity,
                 )
         for depth in range(common, len(target_view_path)):
-            output.lines.append(
-                RenderedLine(
-                    item.no,
+            self._emit(
+                output,
+                RenderedLines(
                     "  " * max(0, depth - 1) + target_view_path[depth],
-                    TONE_MUTED,
-                    item.no,
-                )
+                    new_view_tone if depth > 0 else TONE_MUTED,
+                ),
+                entity if depth > 0 else None,
             )
+            if entity is not None and depth > 0:
+                self._view_line_index[tuple(target_view_path[: depth + 1])] = (
+                    len(output.lines) - 1
+                )
+        if entity is not None:
+            self._last_entity = entity
         return target_view_path
-
-    def _match_entered_view(self, command: str, params: dict[str, str]) -> str | None:
-        """判断命令是否同时进入了某个视图，返回渲染后的视图行。"""
-        tokens = command.split()
-        best: str | None = None
-        for template in self._view_templates:
-            rendered = _render_template(template, params)
-            if PLACEHOLDER_RE.search(rendered):
-                continue
-            parts = rendered.split()
-            if len(parts) < 2 or len(parts) > len(tokens):
-                continue
-            if all(part.lower() == token.lower() for part, token in zip(parts, tokens)):
-                if best is None or len(parts) > len(best.split()):
-                    best = rendered
-        return best
 
 
 def _normalize_command(text: str) -> str:
-    """归一化命令文本，用于当前视图内的重复输出判断。"""
     return " ".join(text.split()).lower()
 
 
 def _translate_display(text: str, profile: VendorProfile) -> str:
-    """把显示命令的首个关键字替换为目标厂商关键字。"""
     stripped = text.strip()
     if not stripped:
         return text
@@ -562,16 +853,22 @@ def _common_prefix(current: list[str], target: list[str]) -> int:
 
 
 def _render_template(template: str, params: dict[str, str]) -> str:
-    def replace(matched: re.Match[str]) -> str:
-        return params.get(matched.group(1), matched.group(0))
+    pieces: list[str] = []
+    for chunk, optional in split_optional_chunks(template):
+        names = PLACEHOLDER_RE.findall(chunk)
+        if optional and any(name not in params for name in names):
+            continue
 
-    return PLACEHOLDER_RE.sub(replace, template)
+        def replace(matched: re.Match[str]) -> str:
+            return params.get(matched.group(1), matched.group(0))
+
+        pieces.append(PLACEHOLDER_RE.sub(replace, chunk))
+    return " ".join(pieces)
 
 
 def _apply_param_values(
     params: dict[str, str], mapping: dict[str, dict[str, str]]
 ) -> dict[str, str]:
-    """按厂商实现的 param_values 转换参数取值，未配置映射的取值原样保留。"""
     if not mapping:
         return params
     converted = dict(params)
@@ -579,16 +876,13 @@ def _apply_param_values(
         value = converted.get(name)
         if value is None:
             continue
-        target = values.get(value)
-        if target is None:
-            target = values.get(value.strip().lower())
+        target = values.get(value) or values.get(value.strip().lower())
         if target:
             converted[name] = target
     return converted
 
 
 def _apply_param_formats(params: dict[str, str], formats: dict[str, str]) -> dict[str, str]:
-    """按厂商实现的 param_formats 转换参数取值形态。"""
     if not formats:
         return params
     converted = dict(params)
@@ -600,7 +894,6 @@ def _apply_param_formats(params: dict[str, str], formats: dict[str, str]) -> dic
 
 
 def _convert_vlan_list(value: str, style: str) -> str:
-    """在 to（如 10 to 20）与 hyphen（如 10-20,30）两种 VLAN 列表写法之间转换。"""
     groups = _split_vlan_groups(value)
     if not groups:
         return value
@@ -629,11 +922,47 @@ def _split_vlan_groups(value: str) -> list[tuple[str, str | None]]:
     return groups
 
 
+def _apply_param_defaults(
+    spec: EntitySpec,
+    params: dict[str, str],
+    source_no: int,
+    entity_id: str,
+    output: TranslationOutput,
+    *,
+    fields: set[str] | None = None,
+) -> dict[str, str]:
+    resolved = dict(params)
+    for name, parameter in spec.parameters.items():
+        if fields is not None and name not in fields:
+            continue
+        if name in resolved or not parameter.default:
+            continue
+        value = _render_template(parameter.default, resolved)
+        if PLACEHOLDER_RE.search(value):
+            continue
+        resolved[name] = value
+        output.warnings.append(
+            RenderWarning(
+                (source_no,),
+                f"{entity_id}：参数 {name} 未提供，已按默认规则填入 {value}",
+                "param_default",
+                "warn",
+            )
+        )
+    return resolved
+
+
 def _validate_parameters(
-    spec: EntitySpec, params: dict[str, str], *, allow_missing: bool = False
+    spec: EntitySpec,
+    params: dict[str, str],
+    *,
+    allow_missing: bool = False,
+    fields: set[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     for name, parameter in spec.parameters.items():
+        if fields is not None and name not in fields:
+            continue
         value = params.get(name)
         if value is None or value == "":
             if parameter.required and not allow_missing:

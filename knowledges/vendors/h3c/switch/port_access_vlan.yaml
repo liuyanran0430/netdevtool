@@ -7,9 +7,10 @@ supported: true
 confidence: high
 pre_commands:
   - "port link-type access"
-view_path: ["interface {intf}"]
-command: "port access vlan {vlan_id}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "port access vlan {vlan_id}"
 verified: true
 sources:
   - "H3C Comware V7 命令：port link-type access + port access vlan"

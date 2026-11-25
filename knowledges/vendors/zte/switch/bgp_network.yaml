@@ -1,0 +1,18 @@
+entity_id: bgp_network
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+segments:
+  - key: [local_as]
+    path: ["router bgp {local_as}"]
+    lines:
+      - text: "network {network} {mask}"
+        each: networks
+verified: false
+warnings:
+  - "需保证本机路由表存在精确匹配的路由，否则该网段不会进入 BGP"
+sources:
+  - "ZXR10 交换机 BGP 配置：BGP 配置模式下 network ipv4-address mask"

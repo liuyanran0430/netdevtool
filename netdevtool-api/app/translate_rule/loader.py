@@ -12,10 +12,13 @@ from app.translate_rule.models import (
     EntitySpec,
     Implementation,
     InterfaceNaming,
+    LineSpec,
     ParameterSpec,
+    SegmentSpec,
     SupplementEntry,
     VendorProfile,
     extract_placeholders,
+    split_optional_chunks,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,6 +191,10 @@ def _load_implementations(
                 if missing:
                     skipped.append(f"{rel}: 使用了未定义参数 {sorted(missing)}")
                     continue
+                reference_errors = _invalid_references(impl, spec)
+                if reference_errors:
+                    skipped.append(f"{rel}: {'；'.join(reference_errors)}")
+                    continue
 
                 key = (vendor, device_type, impl.entity_id)
                 if key in implementations:
@@ -322,9 +329,12 @@ def _register_supplement_entry(
         os=source.os,
         supported=True,
         confidence="medium",
-        command=source.command,
-        view=_view_name(source.view_path),
-        view_path=list(source.view_path),
+        segments=[
+            SegmentSpec(
+                path=list(source.view_path),
+                lines=[LineSpec(text=source.command)],
+            )
+        ],
         verified=True,
         origin="supplement",
     )
@@ -339,11 +349,18 @@ def _register_supplement_entry(
         os=target.os,
         supported=True,
         confidence="medium",
-        command=target.command,
-        view=_view_name(target.view_path),
-        view_path=list(target.view_path),
+        segments=[
+            SegmentSpec(
+                path=list(target.view_path),
+                lines=[
+                    LineSpec(
+                        text=target.command,
+                        negative_text=target.negative_command,
+                    )
+                ],
+            )
+        ],
         pre_commands=list(target.pre_commands),
-        negative_command=target.negative_command,
         verified=True,
         origin="supplement",
     )
@@ -396,22 +413,47 @@ def _load_supplement_impls(
                     skipped.append(f"{rel}: {_format_validation_error(exc)}")
 
 
-def _view_name(view_path: list[str]) -> str | None:
-    """取视图路径最后一层作为命令所在视图类型。"""
-    if not view_path:
-        return None
-    return view_path[-1].split(maxsplit=1)[0].lower()
-
-
 def _missing_parameters(impl: Implementation, spec: EntitySpec) -> set[str]:
     used: set[str] = set()
-    if impl.command:
-        used |= extract_placeholders(impl.command)
-    if impl.negative_command:
-        used |= extract_placeholders(impl.negative_command)
-    for template in impl.pre_commands:
+    for item in impl.pre_commands:
+        template = item if isinstance(item, str) else item.command
         used |= extract_placeholders(template)
+    for segment in impl.segments:
+        for template in _segment_templates(segment):
+            used |= extract_placeholders(template)
     return used - set(spec.parameters)
+
+
+def _segment_templates(segment: SegmentSpec) -> list[str]:
+    templates = list(segment.path)
+    for line in segment.lines:
+        templates.append(line.text)
+        templates.extend(line.aliases)
+        if line.negative_text:
+            templates.append(line.negative_text)
+    return templates
+
+
+def _invalid_references(impl: Implementation, spec: EntitySpec) -> list[str]:
+    """校验模板语法与 key/each 引用，避免加载后才发现规则写错。"""
+    errors: list[str] = []
+    for index, segment in enumerate(impl.segments):
+        for template in _segment_templates(segment):
+            try:
+                split_optional_chunks(template)
+            except ValueError as exc:
+                errors.append(f"segments[{index}] 模板语法错误：{exc}")
+        unknown_keys = set(segment.key) - set(spec.parameters)
+        if unknown_keys:
+            errors.append(f"segments[{index}].key 未定义 {sorted(unknown_keys)}")
+        if segment.each and segment.each not in spec.collections:
+            errors.append(f"segments[{index}].each 未定义集合 {segment.each}")
+        for line_index, line in enumerate(segment.lines):
+            if line.each and line.each not in spec.collections:
+                errors.append(
+                    f"segments[{index}].lines[{line_index}].each 未定义集合 {line.each}"
+                )
+    return errors
 
 
 def _read_yaml(path: Path, label: str, errors: list[str]) -> object | None:

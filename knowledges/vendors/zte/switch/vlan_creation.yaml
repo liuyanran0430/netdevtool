@@ -5,8 +5,9 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: medium
-command: "vlan {vlan_id}"
-view: configure
+segments:
+  - path: ["vlan {vlan_id}"]
+    lines: []
 verified: false
 warnings:
   - "ZXR10 全局配置下使用 vlan vlan-id 创建 VLAN，需现场核对本机版本是否一致"

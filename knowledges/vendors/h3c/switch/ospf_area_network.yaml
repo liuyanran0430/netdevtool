@@ -5,9 +5,12 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
-view_path: ["ospf {process_id}", "area {area_id}"]
-command: "network {network} {wildcard_mask}"
-view: area
+segments:
+  - key: [process_id, area_id]
+    path: ["ospf {process_id}", "area {area_id}"]
+    lines:
+      - text: "network {network} {wildcard_mask}"
+        each: networks
 verified: true
 sources:
   - "H3C Comware V7：OSPF 区域视图下 network ip-address wildcard-mask"

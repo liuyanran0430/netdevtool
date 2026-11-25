@@ -1,0 +1,22 @@
+entity_id: vxlan_nve
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: high
+segments:
+  - key: [tunnel_id]
+    path: ["interface Nve{tunnel_id}"]
+    header_entity: true
+    lines:
+      - text: "source {source_ip}"
+      - text: "vni {vni} head-end peer-list {peer_ip}"
+        each: peers
+verified: true
+warnings:
+  - "源地址变更会导致已有 VXLAN 隧道重建，建议在维护窗口执行"
+  - "该命令为静态 VXLAN 场景；EVPN 动态隧道不需要配置，混用可能导致重复隧道"
+sources:
+  - "华为 CE VXLAN 配置：NVE 接口视图下 source ip-address 指定 VTEP 地址"
+  - "华为 CE VXLAN 配置：NVE 接口视图下 vni vni-id head-end peer-list ip-address"

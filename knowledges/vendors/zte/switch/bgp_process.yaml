@@ -1,0 +1,15 @@
+entity_id: bgp_process
+vendor: zte
+device_type: switch
+product: ZXR10 5960X
+os: V6.00.03.94
+supported: true
+confidence: medium
+segments:
+  - path: ["router bgp {local_as}"]
+    lines: []
+verified: false
+warnings:
+  - "仅覆盖 BGP 进程创建；address-family 与 neighbor 需另行配置"
+sources:
+  - "ZXR10 交换机 BGP 配置：router bgp as-number 进入 BGP 配置模式"

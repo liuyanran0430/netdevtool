@@ -34,7 +34,7 @@ from app.translate_rule.candidate import (
     render_template,
     validate_candidate,
 )
-from app.translate_rule.parser import compile_template
+from app.translate_rule.parser import _view_type, compile_template
 
 SYSTEM_PROMPT = """你是网络设备配置翻译专家，负责把源厂商命令翻译为目标厂商等价命令。
 
@@ -136,21 +136,36 @@ def generate_candidate(
     target_device_type = target_device.device_type.value
     source_description = ""
     source_view = (gap.view or "").strip().lower()
+    source_profile = registry.get_profile(gap.vendor, gap.device_type.value)
+    source_root_view = _view_type(source_profile.root_view)
+    found_source = False
     for implementation in registry.implementations_for(
         gap.vendor, gap.device_type.value
     ):
-        if (
-            source_view
-            and implementation.view
-            and implementation.view.strip().lower() != source_view
-        ):
-            continue
         spec = registry.get_entity(implementation.entity_id)
-        if spec is None or not implementation.command:
+        if spec is None:
             continue
-        command_matcher = compile_template(implementation.command, spec.parameters)
-        if command_matcher.match(sample) is not None:
-            source_description = spec.description or ""
+        for segment in implementation.segments:
+            segment_view = _view_type(segment.path[-1]) if segment.path else source_root_view
+            if source_view and segment_view != source_view:
+                continue
+            if segment.lines:
+                templates = [
+                    template
+                    for line in segment.lines
+                    for template in [line.text, *line.aliases]
+                ]
+            else:
+                templates = segment.path[-1:]
+            for template in templates:
+                command_matcher = compile_template(template, spec.parameters)
+                if command_matcher.match(sample) is not None:
+                    source_description = spec.description or ""
+                    found_source = True
+                    break
+            if found_source:
+                break
+        if found_source:
             break
 
     context = {

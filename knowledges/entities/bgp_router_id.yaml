@@ -1,0 +1,17 @@
+id: bgp_router_id
+domain: routing
+description: "在 BGP 进程中配置 Router ID"
+parameters:
+  local_as:
+    type: int
+    range: [1, 4294967295]
+    required: true
+    note: "本地 AS 号，用于定位 bgp 视图"
+  router_id:
+    type: string
+    format: ipv4
+    required: true
+    note: "BGP Router ID，建议使用稳定的 Loopback 地址"
+semantic_notes:
+  - "华为/华三在 bgp 视图下使用 router-id <ip> 配置，未配置时可能沿用系统 Router ID"
+  - "Router ID 变更会导致 BGP 邻居重建，生产环境变更需谨慎"

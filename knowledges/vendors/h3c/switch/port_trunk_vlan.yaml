@@ -7,11 +7,14 @@ supported: true
 confidence: high
 pre_commands:
   - "port link-type trunk"
-view_path: ["interface {intf}"]
-command: "port trunk permit vlan {vlan_list}"
+segments:
+  - key: [intf]
+    path: ["interface {intf}"]
+    lines:
+      - text: "port trunk permit vlan {vlan_list}"
+        each: vlans
 param_formats:
   vlan_list: to
-view: interface
 verified: true
 sources:
   - "H3C Comware V7 Trunk 命令：port trunk permit vlan"

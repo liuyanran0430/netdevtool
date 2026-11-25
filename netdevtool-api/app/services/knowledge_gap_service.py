@@ -98,21 +98,23 @@ def _collect_target_gaps(
 ) -> int:
     """从结果告警反查源行，采集目标侧实现缺口。"""
     parsed_by_no = {line.no: line for line in parsed_lines}
-    entity_line_by_source: dict[int, str] = {}
-    for line in result.lines:
-        if line.source_no is not None and line.entity_id:
-            entity_line_by_source.setdefault(line.source_no, line.entity_id)
+    # 所有已翻译实体覆盖的源配置行号（从 result.entities 统一取）
+    entity_source_nos: set[int] = set()
+    for entity in result.entities:
+        entity_source_nos.update(entity.source_nos)
 
     seen: set[tuple[str, str]] = set()
     collected = 0
     for warning in result.warnings:
         if warning.code not in TARGET_WARNING_CODES:
             continue
-        if warning.no not in entity_line_by_source:
+        matched_no = next(
+            (no for no in warning.no if no in entity_source_nos and no in parsed_by_no),
+            None,
+        )
+        if matched_no is None:
             continue
-        parsed = parsed_by_no.get(warning.no)
-        if parsed is None:
-            continue
+        parsed = parsed_by_no[matched_no]
         text = parsed.text.strip()
         if not text or is_sensitive(text):
             continue

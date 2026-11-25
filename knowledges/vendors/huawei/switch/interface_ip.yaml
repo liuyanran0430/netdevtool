@@ -5,9 +5,10 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "ip address {ip} {mask}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "ip address {ip} {mask}"
 verified: true
 sources:
   - "华为 VRP 接口视图：ip address ip-address { mask | mask-length }"

@@ -16,8 +16,9 @@ from app.repositories.device_repository import DeviceRepository
 from app.schemas import TranslationCreate
 from app.services import translation_service
 from app.translate_rule import (
+    EntityTarget,
     ParsedLine,
-    RenderedLine,
+    RenderedLines,
     RenderWarning,
     TranslationOutput,
 )
@@ -46,18 +47,22 @@ def device(vendor: str, vendor_en: str, model: str) -> Device:
 def translation_output() -> TranslationOutput:
     return TranslationOutput(
         lines=[
-            RenderedLine(
-                no=1,
+            RenderedLines(
                 text="ip route-static 10.0.0.0 255.255.255.0 192.168.1.1",
                 tone="success",
-                source_no=1,
-                entity_id="static_route",
             )
         ],
+        entity_targets={
+            "static_route": EntityTarget(
+                entity_id="static_route",
+                source_nos=(1,),
+                target_line_indices=(0,),
+            )
+        },
         warnings=[
-            RenderWarning(no=1, message="请复核", code="low_confidence")
+            RenderWarning(no=(1,), message="请复核", code="low_confidence")
         ],
-        summary={"total": 1, "translated": 1, "unsupported": 0, "duration_ms": 0},
+        summary={"total": 1, "duration_ms": 0},
         parsed_lines=[ParsedLine(no=1, text="ip route-static ...", kind="command")],
     )
 
@@ -145,7 +150,7 @@ def test_get_translation_only_exposes_result_after_success(
     db: MagicMock, translation_repository, translation_task_factory
 ) -> None:
     result = {
-        "lines": [{"no": 1, "text": "return", "tone": "muted"}],
+        "lines": [{"no": [1], "text": "return", "tone": "muted"}],
         "warnings": [],
         "entities": [],
         "summary": {"total": 1, "duration_ms": 3},
@@ -243,9 +248,15 @@ def test_worker_saves_result_and_runs_side_effects(
     assert task.error_message is None
     assert task.finished_at is not None
     saved = json.loads(task.result_json)
-    assert saved["lines"][0]["entity_id"] == "static_route"
+    assert saved["lines"][0]["text"] == "ip route-static 10.0.0.0 255.255.255.0 192.168.1.1"
     assert saved["entities"] == [
-        {"id": "static_route", "description": "配置 IPv4 静态路由"}
+        {
+            "id": "static_route",
+            "source_nos": [1],
+            "command_nos": [],
+            "target_line_indices": [0],
+            "description": "配置 IPv4 静态路由",
+        }
     ]
     assert saved["summary"]["total"] == 1
     collect_gaps.assert_called_once()

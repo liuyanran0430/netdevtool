@@ -5,9 +5,10 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "description {text}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "description {text}"
 verified: true
 sources:
   - "ZXR10 5960X 接口配置：接口视图下 description text"

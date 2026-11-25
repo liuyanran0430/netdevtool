@@ -1,6 +1,6 @@
 /** 翻译结果导出：.cfg 配置与复核报告的纯文本生成与下载。 */
 
-import type { TranslationResultLine } from '../../api/translations'
+import type { TranslationResultLines } from '../../api/translations'
 
 export type ExportFormat = 'cfg' | 'report'
 
@@ -32,13 +32,13 @@ export function downloadText(content: string, fileName: string, withBom = false)
   URL.revokeObjectURL(url)
 }
 
-export function buildCfgText(lines: TranslationResultLine[]) {
+export function buildCfgText(lines: TranslationResultLines[]) {
   // 仅输出命令本身，便于直接回灌设备；Windows 习惯使用 CRLF
   return `${lines.map((line) => line.text).join('\r\n')}\r\n`
 }
 
 export function buildReviewReport(
-  lines: TranslationResultLine[],
+  lines: TranslationResultLines[],
   meta: { generatedAt: Date; source: string; target: string; stale: boolean },
 ) {
   const warnCount = lines.filter((line) => line.tone === 'warn').length
@@ -56,8 +56,7 @@ export function buildReviewReport(
     const mark =
       line.tone === 'error' ? '[需人工处理]' : line.tone === 'warn' ? '[需复核]' : ''
     if (!mark) return line.text
-    const source = line.source_no == null ? '' : ` 源行 ${line.source_no}`
-    return `${line.text}  # ${mark}${source}`
+    return `${line.text}  # ${mark}`
   })
   return `${[...header, ...body].join('\r\n')}\r\n`
 }

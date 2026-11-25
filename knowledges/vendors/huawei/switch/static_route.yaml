@@ -5,8 +5,10 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-command: "ip route-static {prefix} {mask} {next_hop}"
-view: system-view
+segments:
+  - path: []
+    lines:
+      - text: "ip route-static {prefix} {mask} {next_hop}"
 verified: true
 sources:
   - "华为 VRP 静态路由标准语法，CE 系列与 S 系列一致"

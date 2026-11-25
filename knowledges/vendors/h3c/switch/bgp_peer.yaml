@@ -1,0 +1,18 @@
+entity_id: bgp_peer
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: medium
+segments:
+  - key: [local_as]
+    path: ["bgp {local_as}"]
+    lines:
+      - text: "peer {peer_ip} as-number {remote_as}"
+        each: peers
+verified: false
+warnings:
+  - "仅覆盖 IPv4 单播邻居；源配置若带 peer group、password、description，需要人工确认"
+sources:
+  - "H3C Comware V7 BGP 命令：BGP 视图下 peer ip-address as-number as-number"

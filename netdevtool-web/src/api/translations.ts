@@ -11,32 +11,39 @@ export interface TranslationCreateInput {
   target_model: string
 }
 
-export interface TranslationResultLine {
-  no: number
+export interface TranslationResultLines {
+  /** 渲染输出的一行纯文本，顺序即目标配置顺序。 */
   text: string
   tone: TranslationTone
-  source_no: number | null
-  entity_id?: string | null
 }
 
 export interface TranslationWarning {
-  /** 源配置行号 */
-  no: number
+  /** 告警直接关联到某个实体（可选） */
+  entity_id?: string | null
+  /** 告警覆盖的源配置行号（冗余） */
+  no: number[]
   message: string
-  /** 告警类型，用于前端聚合展示 */
   code: string
   severity: 'warn' | 'error'
 }
 
 export interface TranslationEntityInfo {
   id: string
+  /** 该实体覆盖的源配置行号，用于源面板高亮 */
+  source_nos: number[]
+  /** 实体自身命令行号（不含视图头行），用于区分视图行与命令行 */
+  command_nos?: number[]
+  /** 该实体在目标输出中的行号索引，用于目标面板高亮 */
+  target_line_indices: number[]
   description: string | null
 }
 
 export interface TranslationResult {
-  lines: TranslationResultLine[]
-  warnings?: TranslationWarning[]
+  lines: TranslationResultLines[]
+  /** 与 lines 平行的源行号映射：无实体行（未识别命令、显示命令）记录其源行号，其余为 null */
+  line_source_nos?: (number | null)[]
   entities?: TranslationEntityInfo[]
+  warnings?: TranslationWarning[]
   summary: {
     total: number
     duration_ms: number

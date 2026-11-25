@@ -1,0 +1,16 @@
+entity_id: bgp_router_id
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: medium
+segments:
+  - path: ["bgp {local_as}"]
+    lines:
+      - text: "router-id {router_id}"
+verified: false
+warnings:
+  - "Router ID 变更会触发 BGP 邻居重建，建议在维护窗口执行"
+sources:
+  - "H3C Comware V7 BGP 命令：BGP 视图下 router-id ipv4-address"

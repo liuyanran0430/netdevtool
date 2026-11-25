@@ -109,9 +109,8 @@ def allowed_views(
     root_view = registry.get_profile(vendor, device_type).root_view
     views = {"system-view", _view_name(root_view)}
     for impl in registry.implementations_for(vendor, device_type):
-        if impl.view:
-            views.add(_view_name(impl.view))
-        views.update(_view_name(item) for item in impl.view_path)
+        for segment in impl.segments:
+            views.update(_view_name(item) for item in segment.path)
     return views
 
 

@@ -5,9 +5,10 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "port link-type {mode}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "port link-type {mode}"
 verified: true
 sources:
   - "H3C Comware V7 接口链路类型命令：port link-type access/trunk/hybrid"

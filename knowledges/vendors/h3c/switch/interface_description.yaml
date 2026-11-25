@@ -5,9 +5,10 @@ product: S6800-54HF
 os: Comware V7
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "description {text}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "description {text}"
 verified: true
 sources:
   - "H3C Comware V7 接口视图：description text"

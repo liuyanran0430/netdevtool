@@ -7,11 +7,14 @@ supported: true
 confidence: high
 pre_commands:
   - "port link-type trunk"
-view_path: ["interface {intf}"]
-command: "port trunk allow-pass vlan {vlan_list}"
+segments:
+  - key: [intf]
+    path: ["interface {intf}"]
+    lines:
+      - text: "port trunk allow-pass vlan {vlan_list}"
+        each: vlans
 param_formats:
   vlan_list: to
-view: interface
 verified: true
 sources:
   - "华为 Trunk 放行命令为 port trunk allow-pass vlan[reference:9]"

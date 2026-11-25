@@ -7,11 +7,14 @@ supported: true
 confidence: high
 pre_commands:
   - "switchport mode trunk"
-view_path: ["interface {intf}"]
-command: "switchport trunk vlan {vlan_list}"
+segments:
+  - key: [intf]
+    path: ["interface {intf}"]
+    lines:
+      - text: "switchport trunk vlan {vlan_list}"
+        each: vlans
 param_formats:
   vlan_list: hyphen
-view: interface
 verified: true
 warnings:
   - "ZTE VLAN 列表使用逗号与短横线表示（如 '10,20'、'100-200'），翻译时会自动将 'to' 写法转换为短横线"

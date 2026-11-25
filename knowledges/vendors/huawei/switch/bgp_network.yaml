@@ -1,0 +1,18 @@
+entity_id: bgp_network
+vendor: huawei
+device_type: switch
+product: CE6857-48S6CQ
+os: V200R023C00
+supported: true
+confidence: medium
+segments:
+  - key: [local_as]
+    path: ["bgp {local_as}"]
+    lines:
+      - text: "network {network} {mask}"
+        each: networks
+verified: false
+warnings:
+  - "需保证本机路由表存在精确匹配的路由，否则该网段不会进入 BGP"
+sources:
+  - "华为 VRP BGP 配置：BGP 视图下 network ipv4-address mask"

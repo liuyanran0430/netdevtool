@@ -5,9 +5,10 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "switchport mode {mode}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "switchport mode {mode}"
 verified: true
 sources:
   - "ZXR10 5960X 配置指导 V6.00.03.94 §2.4.3 (配置SwitchVLAN)：switchport mode access/trunk/hybrid"

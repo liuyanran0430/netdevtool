@@ -41,21 +41,15 @@ export default defineConfig({
     stderr: 'pipe',
   },
 
-  /* Configure projects for major browsers */
+  /*
+   * 仅跑 Chromium：Firefox / WebKit 二进制体积大、国内下载慢，
+   * 且本项目 UI 以 Chromium 内核为基线，多内核回归收益低。
+   */
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
-
-    {
-      name: 'firefox',
-      use: { ...devices['Desktop Firefox'] },
-    },
-
-    {
-      name: 'webkit',
-      use: { ...devices['Desktop Safari'] },
+      // 复用本机已安装的 Chrome，避免下载 Playwright 内置 Chromium
+      use: { ...devices['Desktop Chrome'], channel: 'chrome' },
     },
   ],
 });

@@ -112,12 +112,6 @@ def materialize_task_items(
             logger.exception("审核条目物化失败：结果解析异常 request_id=%s", task.request_id)
             return 0
 
-    warnings_by_no: dict[int, list] = {}
-    for warning in result.warnings:
-        if warning.code in EXCLUDED_CODES:
-            continue
-        warnings_by_no.setdefault(warning.no, []).append(warning)
-
     source_lines = [line.rstrip("\r") for line in task.source_text.split("\n")]
     views = _views_of_lines(source_lines)
 
@@ -129,53 +123,51 @@ def materialize_task_items(
 
     rows: list[dict] = []
     seen: set[str] = set()
-    for index, line in enumerate(result.lines):
-        if line.tone == "muted":
+    # 直接从 warnings 出发构建审核条目：每条 warning 自带 no（源行号）和 entity_id
+    for warning in result.warnings:
+        if warning.code in EXCLUDED_CODES:
             continue
-        related = warnings_by_no.get(line.source_no, []) if line.source_no is not None else []
-        if not related:
-            continue
+        for source_no in warning.no:
+            source_text = _source_line(source_lines, source_no)
+            if source_text is None:
+                continue
+            item_key = build_item_key(
+                source_vendor=task.source_vendor,
+                source_model=task.source_model,
+                target_vendor=task.target_vendor,
+                target_model=task.target_model,
+                source_text=source_text,
+            )
+            if item_key in seen:
+                continue
+            seen.add(item_key)
 
-        source_text = _source_line(source_lines, line.source_no)
-        item_key = build_item_key(
-            source_vendor=task.source_vendor,
-            source_model=task.source_model,
-            target_vendor=task.target_vendor,
-            target_model=task.target_model,
-            source_text=source_text,
-        )
-        if item_key in seen:
-            continue
-        seen.add(item_key)
-
-        codes = [warning.code or "unknown" for warning in related]
-        severity = "error" if any(warning.severity == "error" for warning in related) else "warn"
-        template = normalize_command_template(source_text) if source_text else ""
-        rows.append(
-            {
-                "user_id": task.user_id,
-                "item_key": item_key,
-                "request_id": task.request_id,
-                "line_index": index + 1,
-                "source_no": line.source_no,
-                "source_vendor": task.source_vendor,
-                "source_model": task.source_model,
-                "target_vendor": task.target_vendor,
-                "target_model": task.target_model,
-                "view": _view_at(views, line.source_no),
-                "source_text": source_text,
-                "target_text": line.text,
-                "original_tone": line.tone,
-                "codes": codes,
-                "code_csv": ",".join(dict.fromkeys(codes)),
-                "severity": severity,
-                "severity_rank": SEVERITY_RANK[severity],
-                "code_priority": _code_priority(codes),
-                "message": "；".join(warning.message for warning in related),
-                "gap_id": gap_map.get(template) if template else None,
-                "created_at": task.created_at,
-            }
-        )
+            code = warning.code or "unknown"
+            severity = warning.severity or "warn"
+            template = normalize_command_template(source_text) if source_text else ""
+            rows.append(
+                {
+                    "user_id": task.user_id,
+                    "item_key": item_key,
+                    "request_id": task.request_id,
+                    "line_index": source_no,  # 简化：用源行号代替目标行索引
+                    "source_no": source_no,
+                    "source_vendor": task.source_vendor,
+                    "source_model": task.source_model,
+                    "target_vendor": task.target_vendor,
+                    "target_model": task.target_model,
+                    "view": _view_at(views, source_no),
+                    "source_text": source_text,
+                    "codes": [code],
+                    "code_csv": code,
+                    "severity": severity,
+                    "severity_rank": SEVERITY_RANK.get(severity, 1),
+                    "code_priority": _code_priority([code]),
+                    "message": warning.message,
+                    "gap_id": gap_map.get(template) if template else None,
+                    "created_at": task.created_at,
+                }
+            )
 
     if not rows:
         return 0

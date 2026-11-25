@@ -5,9 +5,10 @@ product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "port link-type {mode}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "port link-type {mode}"
 verified: true
 sources:
   - "华为 VRP 接口链路类型命令：port link-type access/trunk/hybrid"

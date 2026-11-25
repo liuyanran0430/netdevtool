@@ -1,3 +1,4 @@
 .trae/
 knowledges/docs/
 /netdevtool-api/*.log
+.github/workflows/frontend-ci.yml

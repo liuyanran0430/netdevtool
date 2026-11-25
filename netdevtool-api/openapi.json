@@ -4890,7 +4890,7 @@
         "properties": {
           "lines": {
             "items": {
-              "$ref": "#/components/schemas/TranslationResultLine"
+              "$ref": "#/components/schemas/TranslationResultLines"
             },
             "type": "array",
             "title": "Lines"
@@ -4922,10 +4922,13 @@
         ],
         "title": "TranslationResult"
       },
-      "TranslationResultLine": {
+      "TranslationResultLines": {
         "properties": {
           "no": {
-            "type": "integer",
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
             "title": "No"
           },
           "text": {
@@ -4936,27 +4939,13 @@
             "type": "string",
             "title": "Tone"
           },
-          "source_no": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source No"
-          },
-          "entity_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entity Id"
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Entity Ids",
+            "default": []
           }
         },
         "type": "object",
@@ -4965,7 +4954,7 @@
           "text",
           "tone"
         ],
-        "title": "TranslationResultLine"
+        "title": "TranslationResultLines"
       },
       "TranslationResultSummary": {
         "properties": {

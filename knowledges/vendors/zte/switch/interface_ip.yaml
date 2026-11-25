@@ -5,9 +5,10 @@ product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
 confidence: high
-view_path: ["interface {intf}"]
-command: "ip address {ip} {mask}"
-view: interface
+segments:
+  - path: ["interface {intf}"]
+    lines:
+      - text: "ip address {ip} {mask}"
 verified: true
 warnings:
   - "部分 ZXROS 版本仅接受点分十进制掩码，使用前缀长度写法时请现场确认"

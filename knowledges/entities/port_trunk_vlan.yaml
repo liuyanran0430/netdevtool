@@ -10,6 +10,8 @@ parameters:
     format: vlan_list
     required: true
     note: "VLAN 列表，如 '10 20 30' 或范围 '10 to 20'"
+collections:
+  vlans: [vlan_list]
 semantic_notes:
   - "华为/华三使用 port 风格；中兴使用 switchport 风格"
   - "华为命令为 allow-pass，华三为 permit，中兴为 trunk vlan"

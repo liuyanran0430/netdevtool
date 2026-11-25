@@ -17,6 +17,41 @@ def extract_placeholders(template: str) -> set[str]:
     return set(PLACEHOLDER_RE.findall(template))
 
 
+def split_optional_chunks(template: str) -> list[tuple[str, bool]]:
+    """按 `[ ... ]` 把模板拆成必选/可选片段，返回 `(片段, 是否可选)`。
+
+    可选片段表示源配置中可省略的命令部分，如 `ospf {process_id} [router-id {router_id}]`。
+    """
+    chunks: list[tuple[str, bool]] = []
+    buffer: list[str] = []
+    optional = False
+    for token in template.split():
+        starts = token.startswith("[")
+        ends = token.endswith("]")
+        if starts:
+            if optional:
+                raise ValueError(f"可选片段不支持嵌套：{template}")
+            if buffer:
+                chunks.append((" ".join(buffer), False))
+                buffer = []
+            optional = True
+        elif ends and not optional:
+            raise ValueError(f"可选片段未开始就结束：{template}")
+        token = token.strip("[]")
+        if token:
+            buffer.append(token)
+        if ends:
+            if buffer:
+                chunks.append((" ".join(buffer), optional))
+                buffer = []
+            optional = False
+    if optional:
+        raise ValueError(f"可选片段未闭合：{template}")
+    if buffer:
+        chunks.append((" ".join(buffer), False))
+    return chunks
+
+
 class ParameterType(str, Enum):
     """参数的基础数据类型。"""
 
@@ -41,6 +76,8 @@ class ParameterSpec(BaseModel):
     format: ValueFormat | None = None
     required: bool = True
     note: str | None = None
+    # 缺省值模板：参数未提供时用其它参数推导，如 bd_id: "{vni}"
+    default: str | None = None
     range: tuple[int, int] | None = None
     pattern: str | None = None
 
@@ -67,7 +104,34 @@ class EntitySpec(BaseModel):
     domain: str | None = None
     description: str | None = None
     parameters: dict[str, ParameterSpec] = Field(default_factory=dict)
+    # 重复参数组：组名 -> 每行包含的字段，如 peers: [vni, peer_ip]
+    collections: dict[str, list[str]] = Field(default_factory=dict)
     semantic_notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_defaults(self) -> "EntitySpec":
+        for name, parameter in self.parameters.items():
+            if not parameter.default:
+                continue
+            refs = extract_placeholders(parameter.default)
+            unknown = refs - set(self.parameters)
+            if unknown:
+                raise ValueError(
+                    f"{name}.default 引用了未定义参数 {sorted(unknown)}"
+                )
+            if name in refs:
+                raise ValueError(f"{name}.default 不能引用自身")
+        for collection, fields in self.collections.items():
+            if not collection.strip() or not fields:
+                raise ValueError("collections 的组名和字段列表不能为空")
+            unknown = set(fields) - set(self.parameters)
+            if unknown:
+                raise ValueError(
+                    f"collections.{collection} 引用了未定义参数 {sorted(unknown)}"
+                )
+            if len(set(fields)) != len(fields):
+                raise ValueError(f"collections.{collection} 存在重复字段")
+        return self
 
 
 class AppliesTo(BaseModel):
@@ -76,6 +140,43 @@ class AppliesTo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     products: list[str] = Field(default_factory=list)
+
+
+class PreCommand(BaseModel):
+    """视图相关的前置命令。
+
+    - 字符串写法：在实体自身视图内输出（默认行为）。
+    - 指定 `view` 时：先进入该视图输出命令，再退回根视图继续渲染实体。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(min_length=1)
+    view: str | None = None
+
+
+class LineSpec(BaseModel):
+    """段内一行命令；text 同时用于源匹配与目标生成。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    each: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    negative_text: str | None = None
+
+
+class SegmentSpec(BaseModel):
+    """一个完整配置段，可包含多行和重复项。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: list[str] = Field(default_factory=list)
+    each: str | None = None
+    path: list[str] = Field(default_factory=list)
+    lines: list[LineSpec] = Field(default_factory=list)
+    # 段头本身即为配置对象：无成员命中时也按段头参数生成实体
+    header_entity: bool = False
 
 
 class Implementation(BaseModel):
@@ -91,13 +192,8 @@ class Implementation(BaseModel):
     applies_to: AppliesTo | None = None
     supported: bool = True
     confidence: str = "medium"
-    pre_commands: list[str] = Field(default_factory=list)
-    command: str | None = None
-    # 否定形式：厂商使用独立命令表达（如华三 port link-mode route），留空时按 negation_prefix 生成
-    negative_command: str | None = None
-    view: str | None = None
-    view_path: list[str] = Field(default_factory=list)
-    sub_commands: list[str] = Field(default_factory=list)
+    pre_commands: list[str | PreCommand] = Field(default_factory=list)
+    segments: list[SegmentSpec] = Field(default_factory=list)
     param_formats: dict[str, str] = Field(default_factory=dict)
     # 参数取值映射：实体参数值 → 本厂商取值（如 stp → sstp）
     param_values: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -145,8 +241,8 @@ class Implementation(BaseModel):
 
     @model_validator(mode="after")
     def _validate_command(self) -> "Implementation":
-        if self.supported and not self.command:
-            raise ValueError("supported=true 时必须提供 command")
+        if self.supported and not self.segments:
+            raise ValueError("supported=true 时必须提供 segments")
         if not self.supported and not self.unsupported_reason:
             raise ValueError("supported=false 时必须提供 unsupported_reason")
         return self

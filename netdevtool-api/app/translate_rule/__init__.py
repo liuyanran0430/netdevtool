@@ -9,14 +9,15 @@ from app.translate_rule.models import (
     ValueFormat,
     VendorProfile,
 )
-from app.translate_rule.parser import ParsedEntity, ParsedLine, SourceParser
+from app.translate_rule.parser import ParsedDocument, ParsedEntity, ParsedLine, SourceParser
 from app.translate_rule.registry import (
     KnowledgeRegistry,
     get_registry,
     reload_registry,
 )
 from app.translate_rule.renderer import (
-    RenderedLine,
+    EntityTarget,
+    RenderedLines,
     Renderer,
     RenderWarning,
     TranslationOutput,
@@ -24,16 +25,18 @@ from app.translate_rule.renderer import (
 
 __all__ = [
     "EntitySpec",
+    "EntityTarget",
     "Implementation",
     "KnowledgeLoadError",
     "KnowledgeRegistry",
     "LoadResult",
     "ParameterSpec",
     "ParameterType",
+    "ParsedDocument",
     "ParsedEntity",
     "ParsedLine",
     "RenderWarning",
-    "RenderedLine",
+    "RenderedLines",
     "Renderer",
     "SourceParser",
     "TranslationOutput",
@@ -57,7 +60,7 @@ def translate_config(
 ) -> TranslationOutput:
     """按知识库把源配置翻译为目标厂商配置。"""
     active_registry = registry or get_registry()
-    parsed_lines = SourceParser(active_registry, source_vendor, source_device_type).parse(source_text)
+    document = SourceParser(active_registry, source_vendor, source_device_type).parse(source_text)
     renderer = Renderer(
         active_registry,
         target_vendor,
@@ -65,6 +68,4 @@ def translate_config(
         source_vendor=source_vendor,
         source_device_type=source_device_type,
     )
-    output = renderer.render(parsed_lines)
-    output.parsed_lines = parsed_lines
-    return output
+    return renderer.render(document)

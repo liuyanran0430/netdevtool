@@ -1,0 +1,31 @@
+id: vxlan_nve
+domain: overlay
+description: "配置静态VXLAN隧道的 VTEP 源地址和静态远端 VTEP"
+parameters:
+  tunnel_id:
+    type: int
+    range: [1, 16384]
+    required: true
+    note: "NVE/隧道接口编号；华为以 interface Nve1 组织"
+  source_ip:
+    type: string
+    format: ipv4
+    required: true
+    note: "本端 VTEP 地址，通常使用 Loopback 接口地址"
+  vni:
+    type: int
+    range: [1, 16777215]
+    required: true
+    note: "VNI 编号"
+  peer_ip:
+    type: string
+    format: ipv4
+    required: true
+    note: "远端 VTEP 的源地址，即对端 NVE 的 source 地址"
+collections:
+  peers: [vni, peer_ip]
+semantic_notes:
+  - "华为 CE 使用 vni <vni> head-end peer-list <ip> 配置静态头端复制列表，用于无控制面场景"
+  - "中兴按 VNI 实例绑定隧道，与华为 head-end peer-list 语义不完全等价，需人工确认"
+  - "EVPN 动态发现场景由 BGP EVPN 自动生成隧道，无需静态远端 VTEP 配置"
+  - "源地址要求各 VTEP 之间三层可达，修改源地址会重建隧道并导致流量短暂中断"

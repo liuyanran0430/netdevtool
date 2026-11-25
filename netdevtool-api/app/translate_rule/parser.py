@@ -1,4 +1,4 @@
-"""源配置解析：命令模板编译为正则，并按视图状态机逐行识别实体。"""
+"""源配置解析：按配置段识别实体，聚合同对象并保留扁平行视图。"""
 
 import re
 from dataclasses import dataclass, field
@@ -7,9 +7,12 @@ from app.translate_rule.models import (
     PLACEHOLDER_RE,
     EntitySpec,
     Implementation,
+    LineSpec,
     ParameterSpec,
     ParameterType,
+    SegmentSpec,
     ValueFormat,
+    split_optional_chunks,
 )
 from app.translate_rule.registry import KnowledgeRegistry
 
@@ -28,31 +31,39 @@ class CompiledTemplate:
     pattern: re.Pattern[str]
     param_names: tuple[str, ...]
     literal_length: int
-    bucket: str
 
     def match(self, text: str) -> dict[str, str] | None:
         matched = self.pattern.match(text)
         if matched is None:
             return None
-        return {name: matched.group(name) for name in self.param_names}
-
-
-@dataclass(frozen=True)
-class SourceMatcher:
-    """模板与厂商实现的绑定。"""
-
-    implementation: Implementation
-    template: CompiledTemplate
+        params: dict[str, str] = {}
+        for name in self.param_names:
+            value = matched.group(name)
+            if value is not None:
+                params[name] = value
+        return params
 
 
 @dataclass
 class ParsedEntity:
-    """解析出的一条实体命令。"""
+    """一个逻辑配置对象；集合字段与普通单值参数分开保存。"""
 
     entity_id: str
     params: dict[str, str]
     view: str | None
     negative: bool = False
+    collections: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    source_nos: list[int] = field(default_factory=list)
+    # 实体自身命令行号（不含视图头），决定渲染位置；视图头行号只进 source_nos
+    command_nos: list[int] = field(default_factory=list)
+    negative_each: str | None = None
+    invalid: bool = False
+
+    @property
+    def source_no(self) -> int:
+        if self.command_nos:
+            return min(self.command_nos)
+        return min(self.source_nos) if self.source_nos else 0
 
 
 @dataclass
@@ -63,41 +74,116 @@ class ParsedLine:
     text: str
     kind: str  # blank / comment / view / pre / command / display / other
     entity: ParsedEntity | None = None
-    # 视图类型 -> 进入该视图的源行号，供渲染器把生成行映射回源配置
-    view_nos: dict[str, int] | None = None
-    # 该行所在的视图类型，未识别命令用于采集知识缺口
     view: str | None = None
-    # display 行所在的源视图链路与参数，供渲染器重建目标视图
     view_path: list[str] = field(default_factory=list)
     view_params: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ParsedIssue:
+    """源段聚合阶段发现的问题，由渲染器转换为对外告警。"""
+
+    source_no: int
+    message: str
+    code: str
+    severity: str = "error"
+
+
+@dataclass
+class ParsedDocument:
+    """段级逻辑对象与原始顺序行视图。"""
+
+    lines: list[ParsedLine] = field(default_factory=list)
+    entities: list[ParsedEntity] = field(default_factory=list)
+    issues: list[ParsedIssue] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _SegmentRule:
+    implementation: Implementation
+    spec: EntitySpec
+    segment: SegmentSpec
+    index: int
+
+
+@dataclass(frozen=True)
+class _LineMatcher:
+    rule: _SegmentRule
+    line: LineSpec
+    index: int
+    template: CompiledTemplate
+
+
+@dataclass(frozen=True)
+class _PathMatcher:
+    rule: _SegmentRule
+    template: CompiledTemplate
+    depth: int
+    parent_types: tuple[str, ...]
+
+
+@dataclass
+class _ViewEntry:
+    template: str
+    params: dict[str, str]
+    line_index: int
+    rules: list[_SegmentRule]
+    # 段头自身可成实体的规则：无成员命中时在解析末尾补建实体
+    header_rules: list[_SegmentRule] = field(default_factory=list)
+    context: dict[str, str] = field(default_factory=dict)
+    # 该视图所在的完整视图栈行号，供实体记录“包括外层视图”的所有行
+    stack_nos: tuple[int, ...] = ()
+    # 在该视图内识别出的实体，用于把 quit 行归属到对应实体
+    entities: list[ParsedEntity] = field(default_factory=list)
 
 
 def compile_template(
     template: str, parameters: dict[str, ParameterSpec], *, prefix: bool = False
 ) -> CompiledTemplate:
-    """把命令模板编译为带命名分组的正则。`prefix=True` 时允许匹配行首片段。"""
-    tokens = template.split()
-    if not tokens:
+    """把命令模板编译为带命名分组的正则。
+
+    `[ ... ]` 包裹的片段视为可省略部分，`prefix=True` 时允许匹配行首片段。
+    """
+    flat: list[tuple[str, bool]] = []
+    for chunk, optional in split_optional_chunks(template):
+        for token in chunk.split():
+            flat.append((token, optional))
+    if not flat:
         raise ValueError("模板不能为空")
+
+    groups: list[tuple[bool, list[str]]] = []
+    for token, optional in flat:
+        if groups and groups[-1][0] == optional:
+            groups[-1][1].append(token)
+        else:
+            groups.append((optional, [token]))
 
     pieces: list[str] = []
     names: list[str] = []
     literal_length = 0
-    for index, token in enumerate(tokens):
-        token_pattern, token_literal = _compile_token(
-            token,
-            parameters,
-            names,
-            index == len(tokens) - 1 and not prefix,
-        )
-        pieces.append(token_pattern)
-        literal_length += token_literal
+    emitted = False
+    cursor = 0
+    last_index = len(flat) - 1
+    for optional, tokens in groups:
+        token_pieces: list[str] = []
+        for token in tokens:
+            is_last = cursor == last_index and not prefix
+            token_pattern, token_literal = _compile_token(
+                token, parameters, names, is_last
+            )
+            token_pieces.append(token_pattern)
+            literal_length += token_literal
+            cursor += 1
+        body = r"\s+".join(token_pieces)
+        if optional:
+            pieces.append(rf"(?:\s+{body})?")
+            continue
+        pieces.append((r"\s+" if emitted else "") + body)
+        emitted = True
 
     suffix = r"(?:\s+.*)?$" if prefix else r"\s*$"
-    pattern = re.compile(r"^\s*" + r"\s+".join(pieces) + suffix, re.IGNORECASE)
-    first = tokens[0]
-    bucket = "" if PLACEHOLDER_RE.search(first) else first.lower()
-    return CompiledTemplate(template, pattern, tuple(names), literal_length, bucket)
+    pattern = re.compile(r"^\s*" + "".join(pieces) + suffix, re.IGNORECASE)
+    return CompiledTemplate(template, pattern, tuple(names), literal_length)
 
 
 def _compile_token(
@@ -152,273 +238,709 @@ def _param_pattern(
 
 
 class SourceParser:
-    """按源设备厂商与类型解析配置文本。"""
+    """按源厂商的段模板识别配置，并按 key 聚合逻辑对象。"""
 
     def __init__(self, registry: KnowledgeRegistry, vendor: str, device_type: str) -> None:
         self._entities = registry.entities
-        implementations = registry.implementations_for(vendor, device_type)
-        self._implementations = implementations
+        self._implementations = registry.implementations_for(vendor, device_type)
         profile = registry.get_profile(vendor, device_type)
         self._root_view = profile.root_view
         self._root_view_type = _view_type(profile.root_view)
         self._negation_prefix = profile.negation_prefix
         self._display_prefix = profile.display_prefix.lower()
-        self._view_types: dict[str, str] = {}
-        self._view_prefix_matchers: list[CompiledTemplate] = []
-        self._sub_matchers: list[SourceMatcher] = []
-        for impl in implementations:
+
+        self._rules: list[_SegmentRule] = []
+        self._path_matchers: list[_PathMatcher] = []
+        self._line_matchers: list[_LineMatcher] = []
+        self._negative_line_matchers: list[_LineMatcher] = []
+        self._pre_matchers: list[CompiledTemplate] = []
+        for impl in self._implementations:
             spec = self._entities.get(impl.entity_id)
             if spec is None:
                 continue
-            for template in impl.sub_commands:
-                if template:
-                    self._sub_matchers.append(
-                        SourceMatcher(impl, compile_template(template, spec.parameters))
+            parameters = self._parameters_for(impl, spec)
+            for index, segment in enumerate(impl.segments):
+                rule = _SegmentRule(impl, spec, segment, index)
+                self._rules.append(rule)
+                for depth, template in enumerate(segment.path):
+                    self._path_matchers.append(
+                        _PathMatcher(
+                            rule,
+                            compile_template(template, parameters),
+                            depth,
+                            tuple(_view_type(item) for item in segment.path[:depth]),
+                        )
                     )
-        self._sub_matchers.sort(key=_matcher_order)
-        self._command_matchers = self._build_matchers(implementations, with_command=True)
-        # 否定形式使用独立命令的厂商（如华三 port link-mode route）单独建立匹配表
-        self._negative_matchers = self._build_negative_matchers(implementations)
-        self._pre_matchers = self._build_matchers(implementations, with_command=False)
-        self._view_matchers = self._build_view_matchers()
+                for line_index, line in enumerate(segment.lines):
+                    templates = [line.text, *line.aliases]
+                    for template in templates:
+                        self._line_matchers.append(
+                            _LineMatcher(
+                                rule,
+                                line,
+                                line_index,
+                                compile_template(template, parameters),
+                            )
+                        )
+                    if line.negative_text:
+                        self._negative_line_matchers.append(
+                            _LineMatcher(
+                                rule,
+                                line,
+                                line_index,
+                                compile_template(line.negative_text, parameters),
+                            )
+                        )
+            for pre in impl.pre_commands:
+                template = pre if isinstance(pre, str) else pre.command
+                self._pre_matchers.append(compile_template(template, parameters))
 
-    def parse(self, text: str) -> list[ParsedLine]:
-        parsed: list[ParsedLine] = []
-        view_stack: list[tuple[str, dict[str, str], int]] = []
-        pending: set[str] = set()
+        self._path_matchers.sort(key=lambda item: _template_order(item.rule, item.template))
+        self._line_matchers.sort(key=lambda item: _template_order(item.rule, item.template))
+        self._negative_line_matchers.sort(
+            key=lambda item: _template_order(item.rule, item.template)
+        )
+
+    def parse(self, text: str) -> ParsedDocument:
+        document = ParsedDocument()
+        view_stack: list[_ViewEntry] = []
+        view_entries: list[_ViewEntry] = []
+        groups: dict[tuple[object, ...], ParsedEntity] = {}
+        occurrence = 0
+        issue_keys: set[tuple[int, str, str]] = set()
+
+        def add_issue(no: int, code: str, message: str) -> None:
+            key = (no, code, message)
+            if key in issue_keys:
+                return
+            issue_keys.add(key)
+            document.issues.append(ParsedIssue(no, message, code))
 
         for number, raw in enumerate(text.splitlines(), start=1):
             stripped = raw.strip()
             if not stripped:
-                parsed.append(ParsedLine(number, raw, "blank"))
+                document.lines.append(ParsedLine(number, raw, "blank"))
                 continue
             if stripped.startswith("#") or stripped.startswith("!"):
                 if stripped in {"#", "!"}:
-                    # 单独的分节符表示配置块结束，回到根视图
-                    view_stack[:] = [(self._root_view, {}, -1)]
-                    pending.clear()
-                parsed.append(ParsedLine(number, raw, "comment"))
+                    view_stack.clear()
+                document.lines.append(ParsedLine(number, raw, "comment"))
                 continue
 
             lowered = stripped.lower()
-            # 显示命令不参与视图状态机，也不作为配置实体解析
             if lowered.split(maxsplit=1)[0] == self._display_prefix:
-                current_view = view_stack[-1][0] if view_stack else None
-                current_type = (
-                    self._view_type_of(current_view)
-                    if current_view
-                    else self._root_view_type
-                )
-                context: dict[str, str] = {}
-                for _, params, _ in view_stack:
-                    context.update(params)
-                parsed.append(
+                document.lines.append(
                     ParsedLine(
                         number,
                         raw,
                         "display",
-                        view=current_type,
-                        view_path=[template for template, _, _ in view_stack],
-                        view_params=context,
+                        view=self._current_view_type(view_stack),
+                        view_path=[entry.template for entry in view_stack],
+                        view_params=self._context(view_stack),
                     )
                 )
                 continue
             if lowered in VIEW_EXIT_COMMANDS:
                 if view_stack:
-                    view_stack.pop()
-                pending.clear()
-                parsed.append(ParsedLine(number, raw, "view"))
+                    closed = view_stack.pop()
+                    for entity in closed.entities:
+                        if number not in entity.source_nos:
+                            entity.source_nos.append(number)
+                document.lines.append(ParsedLine(number, raw, "view"))
                 continue
-            if lowered in VIEW_TOP_COMMANDS:
+            if lowered in VIEW_TOP_COMMANDS or lowered == self._root_view:
                 view_stack.clear()
-                pending.clear()
-                parsed.append(ParsedLine(number, raw, "view"))
+                document.lines.append(ParsedLine(number, raw, "view"))
                 continue
 
-            context: dict[str, str] = {}
-            for _, params, _ in view_stack:
-                context.update(params)
-            current_view = view_stack[-1][0] if view_stack else None
-            # 配置导出通常不带根视图，起始行按根视图处理
-            current_type = (
-                self._view_type_of(current_view)
-                if current_view
-                else self._root_view_type
+            matched = self._match_negative_member(
+                stripped, raw, number, view_stack, document, groups, add_issue
             )
-
-            # 否定语义（undo / no）只按当前视图匹配实体，不参与视图进入判断
-            body = stripped
-            negative = False
-            prefix = self._negation_prefix.lower()
-            if prefix and lowered.startswith(prefix + " "):
-                negative = True
-                body = stripped[len(prefix) + 1 :].strip()
-                command = self._match(self._command_matchers, body, current_type, pending or None)
-                if command is not None:
-                    params = self._normalize_params(
-                        command.implementation,
-                        {**context, **command.template.match(body)},
-                    )
-                    pending.clear()
-                    parsed.append(
-                        ParsedLine(
-                            number,
-                            raw,
-                            "command",
-                            ParsedEntity(
-                                command.implementation.entity_id,
-                                params,
-                                current_view,
-                                negative=True,
-                            ),
-                            self._view_numbers(view_stack, parsed),
-                        )
-                    )
-                else:
-                    parsed.append(ParsedLine(number, raw, "other", view=current_type))
-                continue
-
-            view = self._match_view(stripped)
-            if view is not None:
-                template, params = view
-                entry = (template, params, len(parsed))
-                if (
-                    self._view_type_of(template) == "interface"
-                    and view_stack
-                    and self._view_type_of(view_stack[-1][0]) == "interface"
-                ):
-                    view_stack[-1] = entry
-                else:
-                    view_stack.append(entry)
-                pending.clear()
-                parsed.append(ParsedLine(number, raw, "view"))
-                continue
-
-            command = self._match(self._command_matchers, stripped, current_type, pending or None)
-            negative = False
-            if command is None:
-                # 否定形式使用独立命令的厂商（如华三 port link-mode route）
-                command = self._match(
-                    self._negative_matchers, stripped, current_type, pending or None
+            if not matched:
+                matched = self._match_view(
+                    stripped,
+                    raw,
+                    number,
+                    view_stack,
+                    view_entries,
+                    document,
+                    groups,
+                    add_issue,
                 )
-                negative = command is not None
-            if command is None and view_stack:
-                # 源配置省略 quit/分节符时，允许按根视图命令隐式退出当前视图
-                command = self._match_root_command(stripped)
-                if command is not None:
-                    view_stack.clear()
-                    context = {}
-                    current_view = None
-            if command is not None:
-                params = self._normalize_params(
-                    command.implementation,
-                    {**context, **command.template.match(stripped)},
+            if not matched:
+                matched = self._match_member(
+                    stripped,
+                    raw,
+                    number,
+                    view_stack,
+                    document,
+                    groups,
+                    add_issue,
+                    negative=False,
                 )
-                pending.clear()
-                parsed.append(
-                    ParsedLine(
-                        number,
+            if not matched and self._has_negation_prefix(stripped):
+                body = stripped[len(self._negation_prefix) + 1 :].strip()
+                matched = self._match_member(
+                    body,
+                    raw,
+                    number,
+                    view_stack,
+                    document,
+                    groups,
+                    add_issue,
+                    negative=True,
+                )
+                if not matched:
+                    matched = self._match_negative_path(
+                        body, raw, number, view_stack, document
+                    )
+
+            if not matched and view_stack:
+                # 配置省略 quit 时，只有确实命中根视图规则才隐式退出。
+                saved_stack = view_stack[:]
+                view_stack.clear()
+                matched = self._match_negative_member(
+                    stripped, raw, number, view_stack, document, groups, add_issue
+                )
+                if not matched:
+                    matched = self._match_view(
+                        stripped,
                         raw,
-                        "command",
-                        ParsedEntity(
-                            command.implementation.entity_id,
-                            params,
-                            current_view,
-                            negative=negative,
-                        ),
-                        self._view_numbers(view_stack, parsed),
+                        number,
+                        view_stack,
+                        view_entries,
+                        document,
+                        groups,
+                        add_issue,
                     )
-                )
-                if current_type == self._root_view_type:
-                    # 复合命令可能同时进入子视图（如华为 ospf 1 router-id x），补齐后续行上下文
-                    entry = self._match_view_entry(stripped)
-                    if entry is not None:
-                        view_stack.append((entry[0], entry[1], -1))
-                continue
-
-            if view_stack:
-                # 视图行 + 视图内子命令合并为同一实体（如 ospf 1 换行 router-id x）
-                sub = self._match_sub_command(stripped, current_view)
-                if sub is not None:
-                    matcher, sub_params = sub
-                    entry_index = view_stack[-1][2]
-                    if entry_index >= 0:
-                        merged_params = {**context, **sub_params}
-                        origin = parsed[entry_index]
-                        parsed[entry_index] = ParsedLine(
-                            origin.no,
-                            origin.text,
-                            "command",
-                            ParsedEntity(
-                                matcher.implementation.entity_id, merged_params, current_view
-                            ),
-                            self._view_numbers(view_stack, parsed),
+                if not matched:
+                    matched = self._match_member(
+                        stripped,
+                        raw,
+                        number,
+                        view_stack,
+                        document,
+                        groups,
+                        add_issue,
+                        negative=False,
+                    )
+                if not matched and self._has_negation_prefix(stripped):
+                    body = stripped[len(self._negation_prefix) + 1 :].strip()
+                    matched = self._match_member(
+                        body,
+                        raw,
+                        number,
+                        view_stack,
+                        document,
+                        groups,
+                        add_issue,
+                        negative=True,
+                    )
+                    if not matched:
+                        matched = self._match_negative_path(
+                            body, raw, number, view_stack, document
                         )
-                        pending.clear()
-                        continue
+                if not matched:
+                    view_stack[:] = saved_stack
 
-            # 兜底：未能作为独立实体匹配的前置命令（如仅有 port link-type trunk）
-            pre = self._match(self._pre_matchers, stripped, current_type, pending or None)
-            if pre is not None:
-                pending.add(pre.implementation.entity_id)
-                parsed.append(ParsedLine(number, raw, "pre"))
+            if matched:
+                occurrence += 1
                 continue
-
-            parsed.append(ParsedLine(number, raw, "other", view=current_type))
-
-        return parsed
-
-    def _view_numbers(
-        self,
-        view_stack: list[tuple[str, dict[str, str], int]],
-        parsed: list[ParsedLine],
-    ) -> dict[str, int]:
-        """记录每一层视图的源行号，供渲染器把生成视图行映射回源配置。"""
-        numbers: dict[str, int] = {}
-        for template, _, index in view_stack:
-            if index < 0:
+            if any(matcher.match(stripped) is not None for matcher in self._pre_matchers):
+                document.lines.append(
+                    ParsedLine(number, raw, "pre", view=self._current_view_type(view_stack))
+                )
                 continue
-            numbers[self._view_type_of(template)] = parsed[index].no
-        return numbers
-
-    def _build_matchers(
-        self,
-        implementations: list[Implementation],
-        *,
-        with_command: bool,
-    ) -> dict[str, list[SourceMatcher]]:
-        buckets: dict[str, list[SourceMatcher]] = {}
-        for impl in implementations:
-            spec = self._entities.get(impl.entity_id)
-            if spec is None:
-                continue
-            templates = [impl.command] if with_command else impl.pre_commands
-            parameters = self._parameters_for(impl, spec)
-            for template in templates:
-                if not template:
-                    continue
-                compiled = compile_template(template, parameters)
-                buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
-        for matchers in buckets.values():
-            matchers.sort(key=_matcher_order)
-        return buckets
-
-    def _build_negative_matchers(
-        self, implementations: list[Implementation]
-    ) -> dict[str, list[SourceMatcher]]:
-        """为声明了 negative_command 的实现建立否定形式匹配表。"""
-        buckets: dict[str, list[SourceMatcher]] = {}
-        for impl in implementations:
-            spec = self._entities.get(impl.entity_id)
-            if spec is None or not impl.negative_command:
-                continue
-            compiled = compile_template(
-                impl.negative_command, self._parameters_for(impl, spec)
+            document.lines.append(
+                ParsedLine(
+                    number,
+                    raw,
+                    "other",
+                    view=self._current_view_type(view_stack),
+                )
             )
-            buckets.setdefault(compiled.bucket, []).append(SourceMatcher(impl, compiled))
-        for matchers in buckets.values():
-            matchers.sort(key=_matcher_order)
-        return buckets
+
+        # 完整段头存在、但没有任何成员或段头实体命中时，不作为已识别视图吞掉。
+        for entry in view_entries:
+            line = document.lines[entry.line_index]
+            if line.kind != "view":
+                continue
+            if entry.header_rules:
+                self._create_header_entities(
+                    entry, line, document, groups, add_issue
+                )
+                continue
+            if entry.rules:
+                line.kind = "other"
+                line.view = _view_type(entry.template)
+
+        document.entities.sort(key=lambda entity: entity.source_no)
+        return document
+
+    def _create_header_entities(
+        self,
+        entry: _ViewEntry,
+        line: ParsedLine,
+        document: ParsedDocument,
+        groups: dict[tuple[object, ...], ParsedEntity],
+        add_issue,
+    ) -> None:
+        """段头匹配但无成员命中时，按段头参数补建实体。"""
+        for rule in entry.header_rules:
+            entity = self._recognize(
+                rule,
+                entry.context,
+                line.no,
+                line.view,
+                document,
+                groups,
+                add_issue,
+                negative=False,
+            )
+            self._collect_for_segment(rule, entity, entry.context, line.no, add_issue)
+            path_depth = len(rule.segment.path)
+            nos_to_add = (
+                entry.stack_nos[-path_depth:]
+                if 0 < path_depth < len(entry.stack_nos)
+                else entry.stack_nos
+            )
+            for header_no in nos_to_add:
+                if header_no not in entity.source_nos:
+                    entity.source_nos.append(header_no)
+            if entity not in entry.entities:
+                entry.entities.append(entity)
+            if line.entity is None:
+                line.kind = "command"
+                line.entity = entity
+
+    def _match_view(
+        self,
+        text: str,
+        raw: str,
+        no: int,
+        stack: list[_ViewEntry],
+        entries: list[_ViewEntry],
+        document: ParsedDocument,
+        groups: dict[tuple[object, ...], ParsedEntity],
+        add_issue,
+    ) -> bool:
+        depth = len(stack)
+        parent_types = tuple(_view_type(entry.template) for entry in stack)
+        candidates = [
+            matcher
+            for matcher in self._path_matchers
+            if matcher.depth == depth and matcher.parent_types == parent_types
+        ]
+        replace = False
+        if stack:
+            # 同一层同类视图可直接切换，主要用于连续 interface 段。
+            sibling_parent_types = parent_types[:-1]
+            candidates.extend(
+                matcher
+                for matcher in self._path_matchers
+                if matcher.depth == depth - 1
+                and matcher.parent_types == sibling_parent_types
+                and _view_type(matcher.template.template) == _view_type(stack[-1].template)
+            )
+        candidates.sort(key=lambda item: _template_order(item.rule, item.template))
+
+        selected: _PathMatcher | None = None
+        params: dict[str, str] | None = None
+        for matcher in candidates:
+            matched = matcher.template.match(text)
+            if matched is None:
+                continue
+            selected = matcher
+            params = matched
+            replace = matcher.depth == depth - 1
+            break
+        if selected is None or params is None:
+            return False
+
+        template = selected.template.template
+        rules = [
+            matcher.rule
+            for matcher in candidates
+            if matcher.depth == selected.depth
+            and matcher.parent_types == selected.parent_types
+            and matcher.template.template == template
+            and len(matcher.rule.segment.path) == selected.depth + 1
+        ]
+        rules = list({id(rule): rule for rule in rules}.values())
+        normalized = self._normalize_params(selected.rule.implementation, params)
+        entry = _ViewEntry(template, normalized, len(document.lines), rules)
+        if replace:
+            stack[-1] = entry
+        else:
+            stack.append(entry)
+        entries.append(entry)
+
+        line = ParsedLine(no, raw, "view", view=_view_type(template))
+        document.lines.append(line)
+        context = self._context(stack)
+        entry.context = context
+        entry.stack_nos = tuple(document.lines[item.line_index].no for item in stack)
+        for rule in rules:
+            if rule.segment.lines:
+                if rule.segment.header_entity:
+                    entry.header_rules.append(rule)
+                continue
+            entity = self._recognize(
+                rule,
+                context,
+                no,
+                template,
+                document,
+                groups,
+                add_issue,
+                negative=False,
+            )
+            self._collect_for_segment(rule, entity, context, no, add_issue)
+            # 只加与 segment.path 相关的尾部栈层行号，避免外层无关视图（如 interface 层）
+            path_depth = len(rule.segment.path)
+            nos_to_add = (
+                entry.stack_nos[-path_depth:]
+                if 0 < path_depth < len(entry.stack_nos)
+                else entry.stack_nos
+            )
+            for header_no in nos_to_add:
+                if header_no not in entity.source_nos:
+                    entity.source_nos.append(header_no)
+            self._bind_entity(stack, entity)
+            if line.entity is None:
+                line.kind = "command"
+                line.entity = entity
+        return True
+
+    def _match_member(
+        self,
+        text: str,
+        raw: str,
+        no: int,
+        stack: list[_ViewEntry],
+        document: ParsedDocument,
+        groups: dict[tuple[object, ...], ParsedEntity],
+        add_issue,
+        *,
+        negative: bool,
+    ) -> bool:
+        for matcher in self._line_matchers:
+            if not self._path_matches(matcher.rule.segment.path, stack):
+                continue
+            params = matcher.template.match(text)
+            if params is None:
+                continue
+            rule = matcher.rule
+            merged = {
+                **self._context(stack),
+                **self._normalize_params(rule.implementation, params),
+            }
+            entity = self._recognize(
+                rule,
+                merged,
+                no,
+                stack[-1].template if stack else None,
+                document,
+                groups,
+                add_issue,
+                negative=negative,
+                negative_each=matcher.line.each or rule.segment.each,
+                collection_names={rule.segment.each, matcher.line.each},
+            )
+            if not negative:
+                self._collect_for_segment(rule, entity, merged, no, add_issue)
+                if matcher.line.each:
+                    self._add_collection(
+                        entity,
+                        rule.spec,
+                        matcher.line.each,
+                        merged,
+                        no,
+                        add_issue,
+                    )
+            line = ParsedLine(
+                no,
+                raw,
+                "command",
+                entity,
+                self._current_view_type(stack),
+            )
+            document.lines.append(line)
+            self._claim_header(
+                stack,
+                entity,
+                document,
+                include_source=True,
+                path_depth=len(rule.segment.path),
+            )
+            self._bind_entity(stack, entity)
+            return True
+        return False
+
+    def _match_negative_member(
+        self,
+        text: str,
+        raw: str,
+        no: int,
+        stack: list[_ViewEntry],
+        document: ParsedDocument,
+        groups: dict[tuple[object, ...], ParsedEntity],
+        add_issue,
+    ) -> bool:
+        for matcher in self._negative_line_matchers:
+            if not self._path_matches(matcher.rule.segment.path, stack):
+                continue
+            params = matcher.template.match(text)
+            if params is None:
+                continue
+            rule = matcher.rule
+            merged = {
+                **self._context(stack),
+                **self._normalize_params(rule.implementation, params),
+            }
+            entity = self._recognize(
+                rule,
+                merged,
+                no,
+                stack[-1].template if stack else None,
+                document,
+                groups,
+                add_issue,
+                negative=True,
+                negative_each=matcher.line.each or rule.segment.each,
+            )
+            document.lines.append(
+                ParsedLine(
+                    no,
+                    raw,
+                    "command",
+                    entity,
+                    self._current_view_type(stack),
+                )
+            )
+            self._claim_header(stack, entity, document, include_source=True)
+            return True
+        return False
+
+    def _match_negative_path(
+        self,
+        text: str,
+        raw: str,
+        no: int,
+        stack: list[_ViewEntry],
+        document: ParsedDocument,
+    ) -> bool:
+        depth = len(stack)
+        parent_types = tuple(_view_type(entry.template) for entry in stack)
+        for matcher in self._path_matchers:
+            if matcher.depth != depth or matcher.parent_types != parent_types:
+                continue
+            if matcher.rule.segment.lines or len(matcher.rule.segment.path) != depth + 1:
+                continue
+            params = matcher.template.match(text)
+            if params is None:
+                continue
+            merged = {**self._context(stack), **params}
+            entity = ParsedEntity(
+                matcher.rule.implementation.entity_id,
+                merged,
+                stack[-1].template if stack else None,
+                negative=True,
+                source_nos=[no],
+            )
+            document.entities.append(entity)
+            document.lines.append(
+                ParsedLine(
+                    no,
+                    raw,
+                    "command",
+                    entity,
+                    self._current_view_type(stack),
+                )
+            )
+            return True
+        return False
+
+    def _recognize(
+        self,
+        rule: _SegmentRule,
+        params: dict[str, str],
+        no: int,
+        view: str | None,
+        document: ParsedDocument,
+        groups: dict[tuple[object, ...], ParsedEntity],
+        add_issue,
+        *,
+        negative: bool,
+        negative_each: str | None = None,
+        collection_names: set[str | None] | None = None,
+    ) -> ParsedEntity:
+        collection_fields: set[str] = set()
+        if not negative:
+            names = collection_names or {rule.segment.each}
+            for collection in names:
+                if collection:
+                    collection_fields.update(rule.spec.collections.get(collection, []))
+        scalar = {
+            name: value
+            for name, value in params.items()
+            if negative or name not in collection_fields
+        }
+        if negative:
+            entity = ParsedEntity(
+                rule.implementation.entity_id,
+                scalar,
+                view,
+                negative=True,
+                negative_each=negative_each,
+                source_nos=[no],
+                command_nos=[no],
+            )
+            document.entities.append(entity)
+            return entity
+
+        key_fields = rule.segment.key
+        if key_fields and all(params.get(name) is not None for name in key_fields):
+            group_key: tuple[object, ...] = (
+                rule.implementation.entity_id,
+                *((name, params[name]) for name in key_fields),
+            )
+        else:
+            group_key = (rule.implementation.entity_id, "occurrence", len(document.entities))
+        entity = groups.get(group_key)
+        if entity is None:
+            entity = ParsedEntity(
+                rule.implementation.entity_id,
+                dict(scalar),
+                view,
+                source_nos=[no],
+                command_nos=[no],
+            )
+            groups[group_key] = entity
+            document.entities.append(entity)
+            return entity
+
+        for name, value in scalar.items():
+            previous = entity.params.get(name)
+            if previous is None:
+                entity.params[name] = value
+            elif previous != value:
+                entity.invalid = True
+                add_issue(
+                    no,
+                    "param_conflict",
+                    f"{entity.entity_id}：参数 {name} 冲突，保留 {previous}，忽略 {value}",
+                )
+        if no not in entity.source_nos:
+            entity.source_nos.append(no)
+        if no not in entity.command_nos:
+            entity.command_nos.append(no)
+        return entity
+
+    def _collect_for_segment(self, rule, entity, params, no, add_issue) -> None:
+        if rule.segment.each:
+            self._add_collection(
+                entity, rule.spec, rule.segment.each, params, no, add_issue
+            )
+
+    @staticmethod
+    def _add_collection(entity, spec, collection, params, no, add_issue) -> None:
+        fields = spec.collections[collection]
+        record = {name: params[name] for name in fields if params.get(name) is not None}
+        records = entity.collections.setdefault(collection, [])
+        if record in records:
+            return
+        if len(record) < len(fields):
+            compatible = []
+            for index, previous in enumerate(records):
+                if len(previous) == len(fields):
+                    continue
+                if any(
+                    name in previous and previous[name] != value
+                    for name, value in record.items()
+                ):
+                    continue
+                merged = {**previous, **record}
+                if len(merged) == len(fields):
+                    compatible.append((index, merged))
+            if len(compatible) == 1:
+                index, merged = compatible[0]
+                records[index] = merged
+                return
+            if len(compatible) > 1:
+                add_issue(
+                    no,
+                    "ambiguous_collection",
+                    f"{entity.entity_id}：集合 {collection} 无法唯一关联字段，未自动组合",
+                )
+        records.append(record)
+
+    @staticmethod
+    def _bind_entity(stack: list[_ViewEntry], entity: ParsedEntity) -> None:
+        """把实体绑定到其所在的整条视图栈，quit 行据此归属。"""
+        for entry in stack:
+            if entity not in entry.entities:
+                entry.entities.append(entity)
+
+    @staticmethod
+    def _claim_header(
+        stack: list[_ViewEntry],
+        entity: ParsedEntity,
+        document: ParsedDocument,
+        *,
+        include_source: bool,
+        path_depth: int = 0,
+    ) -> None:
+        """把实体绑定到其所在的整条视图栈，并把段头视图行转成命令实体行。
+
+        include_source=True 时只把与该实体 segment.path 相关的尾部栈层行号加入 source_nos，
+        避免无关的外层视图（如 interface 层）被一并纳入。
+        """
+        if not stack:
+            return
+        entry = stack[-1]
+        line = document.lines[entry.line_index]
+        if line.kind == "view":
+            line.kind = "command"
+            line.entity = entity
+        if not include_source:
+            return
+        if path_depth <= 0 or path_depth >= len(stack):
+            for item in stack:
+                header_no = document.lines[item.line_index].no
+                if header_no not in entity.source_nos:
+                    entity.source_nos.append(header_no)
+            return
+        # 只把尾部 path_depth 层的 header 行号纳入（与该 segment.path 直接相关的视图）
+        for item in stack[-path_depth:]:
+            header_no = document.lines[item.line_index].no
+            if header_no not in entity.source_nos:
+                entity.source_nos.append(header_no)
+
+    @staticmethod
+    def _context(stack) -> dict[str, str]:
+        context: dict[str, str] = {}
+        for entry in stack:
+            context.update(entry.params)
+        return context
+
+    def _current_view_type(self, stack) -> str:
+        if not stack:
+            return self._root_view_type
+        return _view_type(stack[-1].template)
+
+    @staticmethod
+    def _path_matches(path: list[str], stack: list[_ViewEntry]) -> bool:
+        if len(path) != len(stack):
+            return False
+        return all(
+            _compatible_template(entry.template, template)
+            for entry, template in zip(stack, path)
+        )
+
+    def _has_negation_prefix(self, text: str) -> bool:
+        prefix = self._negation_prefix.lower()
+        return bool(prefix and text.lower().startswith(prefix + " "))
 
     @staticmethod
     def _parameters_for(
@@ -455,7 +977,6 @@ class SourceParser:
             if value is None:
                 continue
             lowered = value.strip().lower()
-            # 已经是规范取值时不还原，避免与厂商别名互相覆盖
             if lowered in {str(key).strip().lower() for key in mapping}:
                 continue
             for canonical, vendor_value in mapping.items():
@@ -464,131 +985,38 @@ class SourceParser:
                     break
         return normalized
 
-    def _build_view_matchers(self) -> list[CompiledTemplate]:
-        matchers: list[CompiledTemplate] = []
-        seen: set[str] = set()
 
-        def add(template: str, parameters: dict[str, ParameterSpec], view_type: str) -> None:
-            self._view_types.setdefault(template, view_type)
-            if template in seen:
-                return
-            seen.add(template)
-            matchers.append(compile_template(template, parameters))
-            # 行首片段匹配：用于“配置并进入视图”的复合命令（如 ospf 1 router-id x）
-            self._view_prefix_matchers.append(
-                compile_template(template, parameters, prefix=True)
-            )
+def _template_order(rule: _SegmentRule, template: CompiledTemplate) -> tuple:
+    return (
+        rule.implementation.origin == "supplement",
+        -template.literal_length,
+        len(template.param_names),
+    )
 
-        # 根视图不再写进实体/厂商的 view_path，单独注册以识别源配置中的根视图行
-        add(self._root_view, {}, _view_type(self._root_view))
 
-        for impl in self._implementations:
-            spec = self._entities.get(impl.entity_id)
-            if spec is None:
-                continue
-            for template in impl.view_path:
-                add(template, spec.parameters, _view_type(template))
+def _compatible_template(actual: str, expected: str) -> bool:
+    if actual == expected:
+        return True
+    if _view_type(actual) != _view_type(expected):
+        return False
+    actual_literals = _literal_tokens(actual)
+    expected_literals = _literal_tokens(expected)
+    position = 0
+    for literal in expected_literals:
+        try:
+            position = actual_literals.index(literal, position) + 1
+        except ValueError:
+            return False
+    return True
 
-        matchers.sort(key=lambda item: (-item.literal_length, len(item.param_names)))
-        return matchers
 
-    def _view_type_of(self, template: str) -> str:
-        return self._view_types.get(template, _view_type(template))
-
-    def _match_view(self, text: str) -> tuple[str, dict[str, str]] | None:
-        for matcher in self._view_matchers:
-            params = matcher.match(text)
-            if params is not None:
-                return matcher.template, params
-        return None
-
-    def _match_view_entry(self, text: str) -> tuple[str, dict[str, str]] | None:
-        """匹配行首的视图进入片段，用于复合命令补齐视图上下文。"""
-        for matcher in self._view_prefix_matchers:
-            params = matcher.match(text)
-            if params is not None:
-                return matcher.template, params
-        return None
-
-    def _match_sub_command(
-        self, text: str, view_template: str | None
-    ) -> tuple[SourceMatcher, dict[str, str]] | None:
-        """匹配视图内的子命令，其所属实现的命令需以当前视图行开头。"""
-        if not view_template:
-            return None
-        for matcher in self._sub_matchers:
-            if not _starts_with(matcher.implementation.command, view_template):
-                continue
-            params = matcher.template.match(text)
-            if params is not None:
-                return matcher, params
-        return None
-
-    def _match(
-        self,
-        buckets: dict[str, list[SourceMatcher]],
-        text: str,
-        current_type: str | None,
-        pending: set[str] | None,
-    ) -> SourceMatcher | None:
-        first = text.split(maxsplit=1)[0].lower()
-        candidates = [*buckets.get(first, []), *buckets.get("", [])]
-        if pending:
-            matched = self._first_match(candidates, text, current_type, pending)
-            if matched is not None:
-                return matched
-        return self._first_match(candidates, text, current_type, None)
-
-    def _match_root_command(self, text: str) -> SourceMatcher | None:
-        """匹配隶属根视图的命令，用于源配置省略视图退出指令的场景。"""
-        first = text.split(maxsplit=1)[0].lower()
-        candidates = [*self._command_matchers.get(first, []), *self._command_matchers.get("", [])]
-        for matcher in candidates:
-            impl = matcher.implementation
-            # 根视图命令：实现所在视图即为厂商根视图
-            if (impl.view or "").strip().lower() != self._root_view_type:
-                continue
-            if matcher.template.match(text) is not None:
-                return matcher
-        return None
-
-    @staticmethod
-    def _first_match(
-        candidates: list[SourceMatcher],
-        text: str,
-        current_type: str | None,
-        allowed_entities: set[str] | None,
-    ) -> SourceMatcher | None:
-        for matcher in candidates:
-            impl = matcher.implementation
-            if allowed_entities is not None and impl.entity_id not in allowed_entities:
-                continue
-            if impl.view and impl.view.strip().lower() != current_type:
-                continue
-            if matcher.template.match(text) is not None:
-                return matcher
-        return None
+def _literal_tokens(template: str) -> list[str]:
+    return [
+        literal
+        for token in template.replace("[", "").replace("]", "").split()
+        if (literal := PLACEHOLDER_RE.sub("", token).lower())
+    ]
 
 
 def _view_type(template: str) -> str:
-    return template.split(maxsplit=1)[0].lower()
-
-
-def _matcher_order(item: SourceMatcher) -> tuple[bool, int, int]:
-    """匹配优先级：核心层优先于补充层，其次长字面量优先，最后参数少的优先。"""
-    return (
-        item.implementation.origin == "supplement",
-        -item.template.literal_length,
-        len(item.template.param_names),
-    )
-
-
-def _starts_with(command: str | None, prefix: str) -> bool:
-    if not command:
-        return False
-    command_tokens = command.split()
-    prefix_tokens = prefix.split()
-    return (
-        len(prefix_tokens) <= len(command_tokens)
-        and command_tokens[: len(prefix_tokens)] == prefix_tokens
-    )
+    return template.replace("[", "").replace("]", "").split(maxsplit=1)[0].lower()

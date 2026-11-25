@@ -1,0 +1,23 @@
+id: vxlan_bridge_domain
+domain: overlay
+description: "创建二层VNI"
+parameters:
+  bd_id:
+    type: int
+    range: [1, 16777215]
+    required: false
+    # 部分厂商（如中兴）没有独立 BD 号，缺省按 VNI 推导
+    default: "{vni}"
+    note: "桥域 ID，本端二层广播域的标识，需与 VNI 一一对应"
+  vni: 
+    type: int
+    range: [1, 16777215]
+    required: true
+    note: "VXLAN 网络标识，同一 VNI 在各 VTEP 上代表同一个二层域"
+  bd_name:
+    type: string
+    required: false
+    note: "二层域名称；华三以 VSI 名称组织二层域，源配置未提供时需人工补充"
+semantic_notes:
+  - "华为 CE 系列先创建 bridge-domain，再在 BD 视图内使用 vxlan vni 绑定 VNI"
+  - "BD 与 VNI 为一对一映射；同一 VNI 在不同 VTEP 上需绑定相同 BD 号才能互通"

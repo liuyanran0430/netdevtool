@@ -7,8 +7,9 @@ import pytest
 from app.models import DeviceType, KnowledgeGapKind
 from app.repositories.knowledge_gap_repository import KnowledgeGapRepository
 from app.schemas import (
+    TranslationEntityInfo,
     TranslationResult,
-    TranslationResultLine,
+    TranslationResultLines,
     TranslationResultSummary,
     TranslationWarning,
 )
@@ -60,13 +61,14 @@ def test_collect_target_gap_uses_warning_source_line_and_target_scope(
     parsed = [ParsedLine(no=1, text="vlan 10", kind="command", view="system-view")]
     result = TranslationResult(
         lines=[
-            TranslationResultLine(
-                no=1, text="vlan 10", tone="warning", source_no=1, entity_id="vlan"
-            )
+            TranslationResultLines(text="vlan 10", tone="warning")
+        ],
+        entities=[
+            TranslationEntityInfo(id="vlan", source_nos=[1], target_line_indices=[0])
         ],
         warnings=[
-            TranslationWarning(no=1, message="低置信度", code="low_confidence"),
-            TranslationWarning(no=1, message="普通提示", code="other_warning"),
+            TranslationWarning(no=[1], message="低置信度", code="low_confidence"),
+            TranslationWarning(no=[1], message="普通提示", code="other_warning"),
         ],
         summary=TranslationResultSummary(total=1, duration_ms=0),
     )

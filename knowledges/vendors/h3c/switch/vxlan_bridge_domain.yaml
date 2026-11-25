@@ -1,0 +1,21 @@
+entity_id: vxlan_bridge_domain
+vendor: h3c
+device_type: switch
+product: S6800-54HF
+os: Comware V7
+supported: true
+confidence: high
+pre_commands:
+  # Comware V7 配置 VXLAN 前必须先全局使能 L2VPN
+  - view: system-view
+    command: "l2vpn enable"
+segments:
+  - path: ["vsi {bd_name}"]
+    lines:
+      - text: "vxlan {vni}"
+verified: true
+warnings:
+  - "华三以 VSI 名称组织二层域；源侧为华为 BD 模型时 bd_name 需人工补充"
+  - "VSI 内还需用 tunnel <n> 关联 VXLAN 隧道，当前未自动生成"
+sources:
+  - "H3C Comware V7 VXLAN 配置：vsi vsi-name 视图下 vxlan vxlan-id 关联 VNI"

@@ -218,29 +218,32 @@ class TranslationCreated(APIModel):
     status: TranslationTaskStatus
 
 
-class TranslationResultLine(APIModel):
-    no: int
+class TranslationResultLines(APIModel):
+    """渲染输出的一行纯文本，顺序即目标配置顺序。"""
+
     text: str
     tone: str
-    source_no: int | None = None
-    entity_id: str | None = None
 
 
 class TranslationWarning(APIModel):
-    """行级告警，`no` 为源配置行号。"""
+    """实体级告警，直接关联到某个 entity，不再需要逐行匹配。"""
 
-    no: int
+    entity_id: str | None = None
     message: str
     code: str = "unknown"
     severity: str = "warn"
-    # unsupported_entity 的细分原因：missing_impl / explicit_unsupported / entity_missing
-    reason: str | None = None
+    # 该告警覆盖的源配置行号（冗余，供前端定位）
+    no: list[int] = []
 
 
 class TranslationEntityInfo(APIModel):
-    """结果中引用的规范实体及其说明。"""
+    """实体分组的联动元数据。source_nos → 源面板高亮，target_line_indices → 目标面板高亮。"""
 
     id: str
+    source_nos: list[int] = []
+    # 实体自身命令行号（不含视图头行），前端据此区分视图行与命令行
+    command_nos: list[int] = []
+    target_line_indices: list[int] = []
     description: str | None = None
 
 
@@ -250,9 +253,11 @@ class TranslationResultSummary(APIModel):
 
 
 class TranslationResult(APIModel):
-    lines: list[TranslationResultLine]
-    warnings: list[TranslationWarning] = []
+    lines: list[TranslationResultLines]
+    # 与 lines 平行的源行号映射：无实体行（未识别命令、显示命令）记录其源行号，其余为 None
+    line_source_nos: list[int | None] = []
     entities: list[TranslationEntityInfo] = []
+    warnings: list[TranslationWarning] = []
     summary: TranslationResultSummary
 
 

@@ -1,0 +1,12 @@
+id: bgp_process
+domain: routing
+description: "创建 BGP 进程并指定本地 AS 号"
+parameters:
+  local_as:
+    type: int
+    range: [1, 4294967295]
+    required: true
+    note: "本地 AS 号；2 字节 AS 范围为 1-65535，4 字节 AS 可扩展到 4294967295"
+semantic_notes:
+  - "华为/华三使用 bgp <as-number> 直接创建进程并进入 BGP 视图，中兴需先进入 router bgp 视图，关键字不同"
+  - "BGP 进程全局唯一，同一台设备通常只属于一个 AS，多实例场景需使用 VPN 实例"
