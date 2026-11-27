@@ -4,7 +4,6 @@ device_type: switch
 product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
-confidence: medium
 segments:
   - key: [local_as]
     path: ["router bgp {local_as}"]

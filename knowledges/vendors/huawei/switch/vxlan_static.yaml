@@ -1,10 +1,9 @@
-entity_id: vxlan_nve
+entity_id: vxlan_static
 vendor: huawei
 device_type: switch
 product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
-confidence: high
 segments:
   - key: [tunnel_id]
     path: ["interface Nve{tunnel_id}"]

@@ -1,4 +1,4 @@
-id: vxlan_nve
+id: vxlan_static
 domain: overlay
 description: "配置静态VXLAN隧道的 VTEP 源地址和静态远端 VTEP"
 parameters:

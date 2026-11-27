@@ -265,17 +265,29 @@ export async function updateKnowledgeDocumentsMetadata(
   return (await response.json()) as KnowledgeDocumentDto[]
 }
 
-/** 按知识缺口调用大模型生成候选，同步返回校验结果。 */
+/**
+ * 按知识缺口生成 AI 候选（本地 Mock）。
+ * 后端缺口/候选处理已下线，返回演示候选供审核页展示。
+ */
 export async function generateCandidate(
   gapId: number,
-  targetVendor: string,
-  targetModel: string,
+  _targetVendor: string,
+  _targetModel: string,
 ): Promise<SupplementCandidateDto> {
-  const response = await fetch(`${API_BASE}/api/v1/knowledge/gaps/${gapId}/candidates`, {
-    method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target_vendor: targetVendor, target_model: targetModel }),
-  })
-  if (!response.ok) throw await toRequestError(response, '生成候选失败')
-  return (await response.json()) as SupplementCandidateDto
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  return {
+    id: gapId + 1000,
+    gap_id: gapId,
+    status: 'passed',
+    response: {
+      target_command: 'ospf 100 router-id {id}',
+      target_view_path: ['system-view'],
+      reasoning: '演示数据：根据厂商配置指导库相似案例推断等价命令。',
+      confidence: 'high',
+    },
+    validation: { passed: true, errors: [], checks: { source_template: '通过', target_views: '通过' } },
+    rag: { status: 'reranked', reference_count: 3 },
+    created_at: new Date().toISOString().slice(0, 19),
+    reviewed_at: null,
+  }
 }

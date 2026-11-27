@@ -5,6 +5,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     SmallInteger,
@@ -14,51 +15,62 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
 __all__ = [
     "ReviewDecision",
-    "ReviewDecisionAction",
     "ReviewItem",
+    "ReviewItemType",
+    "ReviewStatus",
 ]
 
 
-class ReviewDecisionAction(str, Enum):
-    """审核处置动作。"""
+class ReviewStatus(str, Enum):
+    """审核处置状态。pending未处理、accepted已接受、rejected已拒绝。"""
 
-    accept = "accept"
-    edit = "edit"
-    skip = "skip"
+    pending = "pending"
+    accepted = "accepted"
+    rejected = "rejected"
+
+
+class ReviewItemType(str, Enum):
+    """审核条目类型。unknown_source源侧未识别、missing_target_impl目标侧无实现、unverified_impl源或目标侧未验证。"""
+
+    unknown_source = "unknown_source"
+    missing_target_impl = "missing_target_impl"
+    unverified_impl = "unverified_impl"
 
 
 class ReviewDecision(Base):
     """审核处置表：审核状态的唯一事实来源。
 
-    以「用户 + 稳定命令标识」为唯一键，跨翻译任务共享同一条处置结果；
-    `item_key` 由服务层按源/目标厂商型号与归一化命令生成。
+    以「用户 + 稳定段标识」为唯一键，跨翻译任务共享同一条处置结果；
+    `item_hash` 由服务层按 src_dev_id + dest_dev_id + source_text 生成，
+    与 review_items.item_hash 同值关联。
     """
 
     __tablename__ = "review_decisions"
     __table_args__ = (
-        UniqueConstraint("user_id", "item_key", name="uq_review_decisions_user_item"),
+        UniqueConstraint("user_id", "item_hash", name="uq_review_decisions_user_hash"),
         Index("ix_review_decisions_candidate", "candidate_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="users.id")
-    item_key: Mapped[str] = mapped_column(
-        String(40), nullable=False, comment="稳定命令标识 SHA1"
+    item_hash: Mapped[str] = mapped_column(
+        String(40), nullable=False, comment="稳定段标识（src_dev_id+dest_dev_id+source_text 哈希）"
     )
-    action: Mapped[ReviewDecisionAction] = mapped_column(
+    action: Mapped[ReviewStatus] = mapped_column(
         SAEnum(
-            ReviewDecisionAction,
-            name="review_decision_action",
+            ReviewStatus,
+            name="review_status",
             values_callable=lambda enum: [item.value for item in enum],
         ),
         nullable=False,
-        comment="处置动作：accept=采纳, edit=修改后采纳, skip=拒绝",
+        comment="处置状态：pending=未处理, accepted=已接受, rejected=已拒绝",
     )
     decided_text: Mapped[str | None] = mapped_column(
         Text, nullable=True, comment="修改后采纳的命令文本"
@@ -78,60 +90,74 @@ class ReviewDecision(Base):
 class ReviewItem(Base):
     """审核条目表：翻译成功时物化，审核页直接分页读取。
 
-    以「用户 + 稳定命令标识」为唯一键，同一命令在多次翻译中出现时覆盖为最近一次；
-    处置状态存放在 review_decisions，与条目按 (user_id, item_key) 关联。
+    以「用户 + 稳定段标识」为唯一键实现跨任务去重，同一命令段在多次翻译中
+    出现时覆盖为最近一次；处置状态存放在 review_decisions，与条目按
+    (user_id, item_hash) 关联。`item_hash` 由服务层按
+    src_dev_id + dest_dev_id + source_text（多行拼接）哈希生成。
     """
 
     __tablename__ = "review_items"
     __table_args__ = (
-        UniqueConstraint("user_id", "item_key", name="uq_review_items_user_item"),
+        UniqueConstraint("user_id", "item_hash", name="uq_review_items_user_hash"),
         Index(
             "ix_review_items_user_sort",
             "user_id",
-            "severity_rank",
-            "code_priority",
-            "source_no",
         ),
-        Index("ix_review_items_target", "user_id", "target_vendor", "target_model"),
-        Index("ix_review_items_gap", "gap_id"),
+        Index("ix_review_items_target", "user_id", "dest_dev_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="任务归属 users.id")
-    item_key: Mapped[str] = mapped_column(
-        String(40), nullable=False, comment="稳定命令标识 SHA1"
+    item_hash: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        comment="稳定段标识（src_dev_id+dest_dev_id+source_text 哈希，去重键）",
     )
     request_id: Mapped[str] = mapped_column(
         String(36), nullable=False, comment="来源翻译任务，仅作溯源"
     )
-    line_index: Mapped[int] = mapped_column(
-        Integer, nullable=False, comment="结果行序号（从 1 开始），用于检查点回放"
+    src_dev_id: Mapped[int | None] = mapped_column(
+        # devices.id 为 BIGINT UNSIGNED，外键要求两侧类型与符号一致
+        BIGINT(unsigned=True),
+        ForeignKey("devices.id"),
+        nullable=True,
+        comment="源设备档案 devices.id；设备档案缺失时为空",
     )
-    source_no: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, comment="命中的源配置行号"
+    dest_dev_id: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True),
+        ForeignKey("devices.id"),
+        nullable=True,
+        comment="目标设备档案 devices.id；设备档案缺失时为空",
     )
-    source_vendor: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_model: Mapped[str] = mapped_column(String(128), nullable=False)
-    target_vendor: Mapped[str] = mapped_column(String(64), nullable=False)
-    target_model: Mapped[str] = mapped_column(String(128), nullable=False)
-    view: Mapped[str] = mapped_column(String(255), nullable=False, comment="源命令所在视图")
-    source_text: Mapped[str] = mapped_column(Text, nullable=False)
-    target_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_text: Mapped[list] = mapped_column(
+        JSON, nullable=False, comment="命中的源配置行文本列表"
+    )
     original_tone: Mapped[str] = mapped_column(String(16), nullable=False)
-    codes: Mapped[list] = mapped_column(JSON, nullable=False, comment="告警码列表")
-    code_csv: Mapped[str] = mapped_column(
-        String(255), nullable=False, default="", server_default="", comment="告警码逗号串，用于筛选"
+    type: Mapped[ReviewItemType] = mapped_column(
+        SAEnum(
+            ReviewItemType,
+            name="review_item_type",
+            values_callable=lambda enum: [item.value for item in enum],
+        ),
+        nullable=False,
+        comment="条目类型：unknown_source=源侧未识别, missing_target_impl=目标侧无实现, unverified_impl=源或目标侧未验证",
     )
-    severity: Mapped[str] = mapped_column(String(16), nullable=False)
-    severity_rank: Mapped[int] = mapped_column(
-        SmallInteger, nullable=False, default=1, server_default="1"
+    status: Mapped[ReviewStatus] = mapped_column(
+        SAEnum(
+            ReviewStatus,
+            name="review_status",
+            values_callable=lambda enum: [item.value for item in enum],
+        ),
+        nullable=False,
+        default=ReviewStatus.pending,
+        server_default=ReviewStatus.pending.value,
+        index=True,
+        comment="处置状态：pending=未处理, accepted=已接受, rejected=已拒绝",
     )
-    code_priority: Mapped[int] = mapped_column(
-        SmallInteger, nullable=False, default=2, server_default="2"
-    )
-    message: Mapped[str] = mapped_column(Text, nullable=False, comment="告警说明拼接")
-    gap_id: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True, comment="关联的知识缺口 id，供生成候选"
+    entities_id: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="命中的源厂商实体 id 列表（源侧 yaml 实体段）；未识别命令段为空",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, comment="来源翻译任务创建时间"

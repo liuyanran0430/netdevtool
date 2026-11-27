@@ -19,10 +19,6 @@ from app.models import (
     KnowledgeDocumentFileType,
     KnowledgeDocumentStage,
     KnowledgeDocumentStatus,
-    KnowledgeGapKind,
-    KnowledgeGapStatus,
-    ReviewDecisionAction,
-    SupplementCandidateStatus,
     TranslationTaskStatus,
     UserStatus,
 )
@@ -295,138 +291,6 @@ class TranslationSourceOut(APIModel):
     status: TranslationTaskStatus
 
 
-class ReviewCandidateOut(APIModel):
-    """审核条目关联的最近一次 AI 候选。"""
-
-    id: int
-    status: SupplementCandidateStatus
-    command: str | None = None
-    views: list[str] = Field(default_factory=list)
-    reasoning: str | None = None
-    passed: bool = False
-    created_at: datetime
-
-
-class ReviewDecisionOut(APIModel):
-    """审核处置结果。"""
-
-    item_key: str
-    action: ReviewDecisionAction
-    decided_text: str | None = None
-    candidate_id: int | None = None
-
-
-class ReviewDecisionCreate(BaseModel):
-    """提交审核处置：由后端按设备与源命令重新计算 item_key。"""
-
-    source_vendor: str
-    source_model: str
-    target_vendor: str
-    target_model: str
-    source_text: str
-    action: ReviewDecisionAction
-    decided_text: str | None = None
-    candidate_id: int | None = None
-
-    @model_validator(mode="after")
-    def _check_action(self) -> "ReviewDecisionCreate":
-        if self.action == ReviewDecisionAction.edit and not (self.decided_text or "").strip():
-            raise ValueError("修改后采纳必须提供命令文本")
-        if self.candidate_id is not None and self.action != ReviewDecisionAction.accept:
-            raise ValueError("仅采纳动作可以关联 AI 候选")
-        return self
-
-
-class ReviewItemOut(APIModel):
-    """待审条目，`line_index` 为结果行序号（从 1 开始）。"""
-
-    request_id: str
-    line_index: int
-    item_key: str
-    source_no: int | None = None
-    codes: list[str]
-    severity: str
-    source_vendor: str
-    source_model: str
-    target_vendor: str
-    target_model: str
-    gap_id: int | None = None
-    candidate: ReviewCandidateOut | None = None
-    view: str
-    source_text: str
-    target_text: str
-    message: str
-    created_at: datetime
-
-
-class ReviewStatsOut(APIModel):
-    """审核条目全局统计（不受筛选影响）。"""
-
-    pending: int
-    accepted: int
-    edited: int
-    skipped: int
-
-
-class ReviewTargetOptionOut(APIModel):
-    """目的型号筛选项。"""
-
-    vendor: str
-    model: str
-
-
-class ReviewItemsPageOut(APIModel):
-    """审核条目分页结果，附带全局统计与筛选项。"""
-
-    items: list[ReviewItemOut]
-    total: int
-    page: int
-    page_size: int
-    stats: ReviewStatsOut
-    target_options: list[ReviewTargetOptionOut]
-    code_options: list[str]
-
-
-class ReviewDecisionSnapshotOut(APIModel):
-    """处置快照：审核页生成检查点时按来源行回填。"""
-
-    request_id: str
-    line_index: int
-    action: ReviewDecisionAction
-    decided_text: str | None = None
-    original_tone: str
-
-
-class ReviewHistoryItemOut(APIModel):
-    """审核记录条目：一条处置及其关联命令的展示信息。"""
-
-    item_key: str
-    action: ReviewDecisionAction
-    decided_text: str | None = None
-    request_id: str
-    source_vendor: str
-    source_model: str
-    target_vendor: str
-    target_model: str
-    view: str
-    source_text: str
-    target_text: str
-    codes: list[str]
-    severity: str
-    candidate: ReviewCandidateOut | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class ReviewHistoryPageOut(APIModel):
-    """审核记录分页结果。"""
-
-    items: list[ReviewHistoryItemOut]
-    total: int
-    page: int
-    page_size: int
-
-
 class UserOut(APIModel):
     """用户出参，永不包含密码哈希。"""
 
@@ -448,64 +312,6 @@ class LoginResponse(APIModel):
 
     token: str
     user: UserOut
-
-
-class KnowledgeGapOut(APIModel):
-    """知识缺口出参。"""
-
-    id: int
-    vendor: str
-    device_type: DeviceType
-    product: str
-    os: str | None = None
-    target_vendor: str = ""
-    target_device_type: str = ""
-    view: str | None = None
-    command_template: str
-    raw_sample: str | None = None
-    occurrences: int
-    kind: KnowledgeGapKind
-    status: KnowledgeGapStatus
-    request_ids: list[str] | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class CandidateGenerateRequest(BaseModel):
-    """生成候选入参：需明确目标设备，用于确定目标厂商命令与视图。"""
-
-    target_vendor: str = Field(min_length=1, max_length=64)
-    target_model: str = Field(min_length=1, max_length=128)
-
-
-class SupplementCandidateOut(BaseModel):
-    """候选出参：原始模型返回与自动校验结果均以结构化 JSON 返回。"""
-
-    id: int
-    gap_id: int
-    status: SupplementCandidateStatus
-    response: dict[str, Any] | None = None
-    validation: dict[str, Any] | None = None
-    rag: dict[str, Any] | None = None
-    created_at: datetime
-    reviewed_at: datetime | None = None
-
-
-class SupplementFileOut(BaseModel):
-    """补充知识库条目出参（文件形态）。"""
-
-    id: str
-    path: str
-    source_vendor: str | None = None
-    source_device_type: str | None = None
-    source_command: str | None = None
-    target_vendor: str | None = None
-    target_device_type: str | None = None
-    target_command: str | None = None
-    accepted_by: str | None = None
-    accepted_at: str | None = None
-    verified: bool = False
-    uses: int = 0
 
 
 class ChatCitationOut(APIModel):
@@ -599,3 +405,50 @@ class ChatFeedbackOut(APIModel):
     message_id: int
     rating: int
     reason: str | None = None
+
+
+# ---------------------------- 审核条目 ----------------------------
+
+
+class ReviewItemOut(APIModel):
+    """审核条目出参：物化段信息，设备名凭设备档案关联现取。"""
+
+    item_hash: str
+    request_id: str
+    type: str
+    status: str
+    source_text: list[str]
+    original_tone: str
+    entities_id: list[str] | None = None
+    source_vendor: str
+    source_model: str
+    target_vendor: str
+    target_model: str
+    created_at: datetime
+
+
+class ReviewStatsOut(BaseModel):
+    """审核条目按处置状态统计。"""
+
+    pending: int = 0
+    accepted: int = 0
+    rejected: int = 0
+
+
+class ReviewTargetOptionOut(BaseModel):
+    """目的设备筛选项。"""
+
+    vendor: str
+    model: str
+
+
+class ReviewItemsPageOut(APIModel):
+    """审核条目分页出参：附带全局统计与筛选项。"""
+
+    items: list[ReviewItemOut]
+    total: int
+    page: int
+    page_size: int
+    stats: ReviewStatsOut
+    target_options: list[ReviewTargetOptionOut]
+    type_options: list[str]

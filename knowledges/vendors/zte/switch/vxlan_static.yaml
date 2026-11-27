@@ -1,10 +1,9 @@
-entity_id: vxlan_nve
+entity_id: vxlan_static
 vendor: zte
 device_type: switch
 product: ZXR10 5960X
 os: V6.00.03.94
 supported: true
-confidence: high
 pre_commands:
   - view: vxlan
     command: "global-vxlan enable"

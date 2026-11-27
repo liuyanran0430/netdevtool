@@ -4,7 +4,6 @@ device_type: switch
 product: CE6857-48S6CQ
 os: V200R023C00
 supported: true
-confidence: high
 segments:
   - path: []
     lines:

@@ -4,13 +4,12 @@ device_type: switch
 product: S6800-54HF
 os: Comware V7
 supported: true
-confidence: high
 pre_commands:
   # Comware V7 配置 VXLAN 前必须先全局使能 L2VPN
   - view: system-view
     command: "l2vpn enable"
 segments:
-  - path: ["vsi {bd_name}"]
+  - path: ["vsi {bd_id}"]
     lines:
       - text: "vxlan {vni}"
 verified: true

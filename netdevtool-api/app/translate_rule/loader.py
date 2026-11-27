@@ -328,7 +328,6 @@ def _register_supplement_entry(
         product=source.product,
         os=source.os,
         supported=True,
-        confidence="medium",
         segments=[
             SegmentSpec(
                 path=list(source.view_path),
@@ -348,7 +347,6 @@ def _register_supplement_entry(
         product=target.product,
         os=target.os,
         supported=True,
-        confidence="medium",
         segments=[
             SegmentSpec(
                 path=list(target.view_path),

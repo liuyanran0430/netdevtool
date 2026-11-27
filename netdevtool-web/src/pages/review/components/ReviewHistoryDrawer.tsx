@@ -9,7 +9,6 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import {
-  deleteReviewDecision,
   listReviewHistory,
   type ReviewDecisionAction,
   type ReviewHistoryPageDto,
@@ -39,8 +38,7 @@ const ACTION_CLASSES: Record<ReviewDecisionAction, string> = {
 interface ReviewHistoryDrawerProps {
   open: boolean
   onClose: () => void
-  /** 撤销处置后通知审核列表刷新，被撤销的命令重新回到待审核 */
-  onChanged: () => void
+  onChanged?: () => void
 }
 
 function formatTime(value: string): string {
@@ -52,14 +50,13 @@ function formatTime(value: string): string {
   })
 }
 
-export function ReviewHistoryDrawer({ open, onClose, onChanged }: ReviewHistoryDrawerProps) {
+export function ReviewHistoryDrawer({ open, onClose }: ReviewHistoryDrawerProps) {
   const [data, setData] = useState<ReviewHistoryPageDto | null>(null)
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
   const [action, setAction] = useState<'all' | ReviewDecisionAction>('all')
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
-  const [revoking, setRevoking] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -93,18 +90,8 @@ export function ReviewHistoryDrawer({ open, onClose, onChanged }: ReviewHistoryD
   const items = data?.items ?? []
   const total = data?.total ?? 0
 
-  const handleRevoke = async (itemKey: string) => {
-    setRevoking(itemKey)
-    try {
-      await deleteReviewDecision(itemKey)
-      message.success('已撤销，命令回到待审核列表')
-      await load()
-      onChanged()
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '撤销审核处置失败')
-    } finally {
-      setRevoking(null)
-    }
+  const handleRevoke = async (_itemKey: string) => {
+    message.info('审核处置功能暂未实现')
   }
 
   const renderBody = () => {
@@ -145,9 +132,7 @@ export function ReviewHistoryDrawer({ open, onClose, onChanged }: ReviewHistoryD
       <div className="space-y-2.5">
         {items.map((item) => {
           const targetLine =
-            item.action === 'skip'
-              ? null
-              : item.decided_text || item.candidate?.command || item.target_text
+            item.action === 'skip' ? null : item.decided_text || item.source_text
           return (
             <div
               key={item.item_key}
@@ -160,12 +145,6 @@ export function ReviewHistoryDrawer({ open, onClose, onChanged }: ReviewHistoryD
                   >
                     {ACTION_LABELS[item.action]}
                   </span>
-                  {item.candidate ? (
-                    <span className="shrink-0 rounded-full bg-brand-soft px-2 py-[1px] text-[10px] text-brand">
-                      AI 候选
-                    </span>
-                  ) : null}
-                  <span className="truncate text-[10px] text-ink-300">{item.view}</span>
                 </div>
                 <span className="shrink-0 text-[11px] text-ink-400">
                   {formatTime(item.updated_at)}
@@ -197,13 +176,10 @@ export function ReviewHistoryDrawer({ open, onClose, onChanged }: ReviewHistoryD
                 </span>
                 <button
                   type="button"
-                  disabled={revoking === item.item_key}
                   onClick={() => void handleRevoke(item.item_key)}
-                  className={`flex shrink-0 items-center gap-1 text-[11px] text-brand transition-opacity group-hover:opacity-100 disabled:cursor-not-allowed disabled:text-ink-300 ${
-                    revoking === item.item_key ? 'opacity-100' : 'opacity-0'
-                  }`}
+                  className="flex shrink-0 items-center gap-1 text-[11px] text-brand opacity-0 transition-opacity group-hover:opacity-100"
                 >
-                  {revoking === item.item_key ? '撤销中…' : '撤销此审核'}
+                  撤销此审核
                   <ArrowLeftOutlined className="text-[10px]" />
                 </button>
               </div>

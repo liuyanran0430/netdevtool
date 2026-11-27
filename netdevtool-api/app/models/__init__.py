@@ -33,7 +33,12 @@ from app.models.knowledge import (
     KnowledgeDocumentStage,
     KnowledgeDocumentStatus,
 )
-from app.models.review import ReviewDecision, ReviewDecisionAction, ReviewItem
+from app.models.review import (
+    ReviewDecision,
+    ReviewItem,
+    ReviewItemType,
+    ReviewStatus,
+)
 from app.models.translation import TranslationTask, TranslationTaskStatus
 from app.models.user import User, UserStatus
 
@@ -64,8 +69,9 @@ __all__ = [
     "KnowledgeBaseIndexingMode",
     "KnowledgeBaseRetrievalMode",
     "ReviewDecision",
-    "ReviewDecisionAction",
     "ReviewItem",
+    "ReviewItemType",
+    "ReviewStatus",
     "SupplementCandidate",
     "SupplementCandidateStatus",
     "TranslationTask",

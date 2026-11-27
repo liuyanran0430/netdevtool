@@ -30,15 +30,10 @@ TONE_MUTED = "muted"
 
 _IPV4_FULL = re.compile(rf"^{IPV4_PATTERN}$")
 
-_TONE_BY_CONFIDENCE = {"high": TONE_SUCCESS, "medium": TONE_WARN, "low": TONE_ERROR}
-_TONE_RANK = {TONE_SUCCESS: 0, TONE_WARN: 1, TONE_ERROR: 2}
+_TONE_RANK = {TONE_MUTED: 0, TONE_SUCCESS: 1, TONE_WARN: 2, TONE_ERROR: 3}
 _INTF_UNMAPPED_MESSAGE = "接口名无法映射到目标厂商命名，已原样保留，请人工确认"
 _INTF_MAPPED_MESSAGE = "接口名已按厂商命名规则转换，请确认映射结果"
 _DISPLAY_CHANGED_MESSAGE = "显示命令关键字已转换，参数语法请按目标设备确认"
-
-
-def _confidence_tone(confidence: str) -> str:
-    return _TONE_BY_CONFIDENCE.get(confidence.strip().lower(), TONE_WARN)
 
 
 def _degrade(tone: str, target: str) -> str:
@@ -267,14 +262,15 @@ class Renderer:
             self._emit(
                 output,
                 RenderedLines(
-                    f"# 目标设备不支持: {entity.entity_id}",
+                    f"# 目标设备不支持实体: {entity.entity_id}",
                     TONE_ERROR,
                 ),
                 entity,
             )
             output.warnings.append(
                 RenderWarning(
-                    _warning_nos(entity),
+                    # 不支持的实体连带其视图头行一起标 error，源面板整个视图块可见
+                    tuple(sorted(set(entity.source_nos))),
                     "目标设备不支持该实体",
                     "unsupported_entity",
                     "error",
@@ -344,6 +340,7 @@ class Renderer:
                 target_path,
                 new_view_tone=view_tone,
                 entity=entity,
+                entity_tone=tone,
             )
             indent = "  " * max(0, len(current_view_path) - 1)
             if not local_pre_done:
@@ -578,7 +575,12 @@ class Renderer:
                 continue
             pre_emitted.add(key)
             current_view_path = self._sync_view_path(
-                output, entity.source_no, current_view_path, target_path, entity=entity
+                output,
+                entity.source_no,
+                current_view_path,
+                target_path,
+                entity=entity,
+                entity_tone=tone,
             )
             self._emit(
                 output,
@@ -653,6 +655,7 @@ class Renderer:
             target_path,
             new_view_tone=TONE_WARN if prepared.has_intf else TONE_MUTED,
             entity=entity,
+            entity_tone=tone,
         )
         self._emit(
             output,
@@ -687,15 +690,16 @@ class Renderer:
         entity: ParsedEntity,
         implementation: Implementation,
     ) -> str:
-        tone = _confidence_tone(implementation.confidence)
+        # 只按 verified 判定：已验证 success，未验证 warn
+        tone = TONE_SUCCESS if implementation.verified else TONE_WARN
         if self._source_vendor and self._source_device_type:
             source_impl = self._registry.resolve(
                 self._source_vendor, self._source_device_type, entity.entity_id
             )
-            if source_impl is not None:
-                tone = _degrade(tone, _confidence_tone(source_impl.confidence))
+            if source_impl is not None and not source_impl.verified:
+                tone = _degrade(tone, TONE_WARN)
         if implementation.origin == "supplement":
-            tone = _degrade(tone, TONE_WARN)
+            tone = TONE_SUCCESS
             output.warnings.append(
                 RenderWarning(
                     _warning_nos(entity),
@@ -705,21 +709,12 @@ class Renderer:
                 )
             )
         elif not implementation.verified:
-            tone = _degrade(tone, TONE_WARN)
+            tone = TONE_WARN
             output.warnings.append(
                 RenderWarning(
                     _warning_nos(entity),
                     f"{entity.entity_id}：{self._target_vendor} 实现未经验证",
                     "unverified_impl",
-                    "warn",
-                )
-            )
-        elif implementation.confidence.strip().lower() in {"medium", "low"}:
-            output.warnings.append(
-                RenderWarning(
-                    _warning_nos(entity),
-                    f"{entity.entity_id}：目标实现置信度为 {implementation.confidence}，需人工确认",
-                    "low_confidence",
                     "warn",
                 )
             )
@@ -796,30 +791,43 @@ class Renderer:
         *,
         new_view_tone: str = TONE_MUTED,
         entity: ParsedEntity | None = None,
+        entity_tone: str | None = None,
     ) -> list[str]:
         common = _common_prefix(current_view_path, target_view_path)
-        # 复用已打开的视图时，把当前实体并入这些视图行的归属
+        # 只让 medium/low（warn/error）传染视图头行，success 保持 muted 不放大
+        propagate_tone = entity_tone if entity_tone in (TONE_WARN, TONE_ERROR) else None
+        # 复用已打开的视图时，把当前实体并入这些视图行的归属；
+        # 视图行 tone 随实体命令取较差（medium/low 命令所在视图头行同步标注）
         if entity is not None:
             for depth in range(1, common + 1):
                 index = self._view_line_index.get(tuple(target_view_path[:depth]))
                 if index is not None:
                     self._claim_line(output, index, entity)
+                    if propagate_tone is not None:
+                        row = output.lines[index]
+                        merged = _degrade(row.tone, propagate_tone)
+                        if merged != row.tone:
+                            output.lines[index] = replace(row, tone=merged)
         if not self._profile.allow_direct_view_switch:
             for level in range(len(current_view_path), common, -1):
+                # 视图退出行不归属任何实体，选中实体时不联动高亮 exit
                 self._emit(
                     output,
                     RenderedLines(
                         "  " * (max(0, level - 2) + 1) + self._profile.view_exit,
                         TONE_MUTED,
                     ),
-                    self._last_entity,
+                    None,
                 )
         for depth in range(common, len(target_view_path)):
+            tone = new_view_tone if depth > 0 else TONE_MUTED
+            if depth > 0 and propagate_tone is not None:
+                tone = _degrade(tone, propagate_tone)
             self._emit(
                 output,
                 RenderedLines(
                     "  " * max(0, depth - 1) + target_view_path[depth],
-                    new_view_tone if depth > 0 else TONE_MUTED,
+                    tone,
                 ),
                 entity if depth > 0 else None,
             )

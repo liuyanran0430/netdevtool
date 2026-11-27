@@ -12,6 +12,7 @@ from app.database import SessionLocal
 from app.models import Device, TranslationTask, TranslationTaskStatus
 from app.repositories.device_repository import DeviceRepository
 from app.repositories.translation_repository import TranslationRepository
+from app.services import review_item_service
 from app.schemas import (
     TranslationCreate,
     TranslationEntityInfo,
@@ -23,7 +24,6 @@ from app.schemas import (
     TranslationSourceOut,
     TranslationWarning,
 )
-from app.services import knowledge_gap_service, review_item_service
 from app.translate_rule import get_registry, translate_config
 from app.translate_rule.parser import ParsedLine
 
@@ -155,33 +155,18 @@ def run_translation_task(request_id: str) -> None:
             task.finished_at = datetime.now()
             repository.update(task)
 
+            # 告警段物化为审核条目；失败只记日志，不影响翻译结果
             try:
-                collected = knowledge_gap_service.collect_gaps(
+                review_item_service.materialize_task_items(
                     db,
-                    request_id=request_id,
-                    source_vendor=_vendor_key(source_device),
-                    source_device_type=source_device.device_type.value,
-                    product=source_device.model,
-                    os=None,
-                    parsed_lines=parsed_lines,
-                    result=result,
-                    target_vendor=_vendor_key(target_device),
-                    target_device_type=target_device.device_type.value,
+                    task,
+                    result,
+                    parsed_lines,
+                    source_device=source_device,
+                    target_device=target_device,
                 )
-                if collected:
-                    logger.info("知识缺口采集完成：request_id=%s 行数=%d", request_id, collected)
             except Exception:
-                # 缺口采集是旁路动作，失败不影响翻译结果
-                logger.exception("知识缺口采集失败：request_id=%s", request_id)
-
-            try:
-                # 审核条目物化同样旁路执行，失败不影响翻译结果
-                written = review_item_service.materialize_task_items(
-                    db, task, result, source_device=source_device
-                )
-                logger.info("审核条目物化完成：request_id=%s 条数=%d", request_id, written)
-            except Exception:
-                logger.exception("审核条目物化失败：request_id=%s", request_id)
+                logger.exception("审核条目物化失败 request_id=%s", request_id)
         except TranslationExecutionError as exc:
             _mark_failed(db, repository, request_id, str(exc))
         except Exception as exc:
@@ -235,13 +220,18 @@ def _translate(
     }
     warnings_out: list[TranslationWarning] = []
     for warning in output.warnings:
-        # 找出 source_nos 与 warning.no 有交集的 entity
+        # 找出 source_nos 与 warning.no 交集最大的 entity；
+        # 交集相同时取覆盖更完整（source_nos 更多）的实体，视图行告警归入含命令行的整段
         warning_nos = set(warning.no)
         matched_entity_id: str | None = None
+        best_overlap = 0
+        best_size = 0
         for eid, source_nos in entity_source_nos_map.items():
-            if warning_nos & source_nos:
+            overlap = len(warning_nos & source_nos)
+            if overlap > best_overlap or (overlap == best_overlap and len(source_nos) > best_size):
+                best_overlap = overlap
+                best_size = len(source_nos)
                 matched_entity_id = eid
-                break
         warnings_out.append(
             TranslationWarning(
                 entity_id=matched_entity_id,

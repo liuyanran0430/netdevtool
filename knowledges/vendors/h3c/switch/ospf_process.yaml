@@ -4,7 +4,6 @@ device_type: switch
 product: S6800-54HF
 os: Comware V7
 supported: true
-confidence: high
 segments:
   - key: [process_id]
     path: ["ospf {process_id} [router-id {router_id}]"]

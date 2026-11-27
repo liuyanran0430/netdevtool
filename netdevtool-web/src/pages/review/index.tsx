@@ -3,11 +3,10 @@ import { Input, Modal, message } from 'antd'
 import { PageHeader } from '../../components/PageHeader'
 import { saveCheckpoint } from '../translate/storage'
 import {
-  createReviewDecision,
   listReviewDecisionSnapshots,
   listReviewItems,
-  type ReviewCandidateDto,
   type ReviewDecisionAction,
+  type ReviewItemType,
   type ReviewItemsPageDto,
 } from '../../api/review'
 import { toReviewItems, type ReviewItem } from './deriveItems'
@@ -18,7 +17,7 @@ import { ReviewFilterBar } from './components/ReviewFilterBar'
 
 const PAGE_SIZE = 10
 
-const EMPTY_STATS = { pending: 0, accepted: 0, edited: 0, skipped: 0 }
+const EMPTY_STATS = { pending: 0, accepted: 0, rejected: 0 }
 
 function toCheckpointMap(
   reviews: Record<number, { tone: string; text?: string }>,
@@ -26,17 +25,6 @@ function toCheckpointMap(
   return new Map(
     Object.entries(reviews).map(([index, value]) => [Number(index), value]),
   )
-}
-
-function decisionPayload(item: ReviewItem, action: ReviewDecisionAction) {
-  return {
-    source_vendor: item.sourceVendor,
-    source_model: item.sourceModel,
-    target_vendor: item.targetVendor,
-    target_model: item.targetModel,
-    source_text: item.sourceText,
-    action,
-  }
 }
 
 function defaultCheckpointName(): string {
@@ -51,7 +39,7 @@ export function ReviewPage() {
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [targetModel, setTargetModel] = useState('all')
-  const [code, setCode] = useState('all')
+  const [type, setType] = useState<ReviewItemType | 'all'>('all')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [completeOpen, setCompleteOpen] = useState(false)
@@ -69,7 +57,7 @@ export function ReviewPage() {
           pageSize: PAGE_SIZE,
           targetVendor: vendor || undefined,
           targetModel: model || undefined,
-          code: code === 'all' ? undefined : code,
+          type: type === 'all' ? undefined : type,
         })
         setData(response)
         setSelected(new Set())
@@ -82,7 +70,7 @@ export function ReviewPage() {
         if (!silent) setLoading(false)
       }
     },
-    [page, targetModel, code],
+    [page, targetModel, type],
   )
 
   useEffect(() => {
@@ -103,57 +91,32 @@ export function ReviewPage() {
       })),
     [data],
   )
-  const codeOptions = data?.code_options ?? []
+  const codeOptions = data?.type_options ?? []
 
   const selectableOnPage = items
   const allSelected =
     selectableOnPage.length > 0 && selectableOnPage.every((item) => selected.has(item.key))
   const someSelected = selectableOnPage.some((item) => selected.has(item.key))
 
-  const disposed = stats.accepted + stats.edited + stats.skipped
+  const disposed = stats.accepted + stats.rejected
   const totalAll = stats.pending + disposed
 
+  // 处置按钮仅展示，功能暂未实现
   const submitDecision = async (
-    item: ReviewItem,
-    action: ReviewDecisionAction,
-    extra: { decided_text?: string; candidate_id?: number } = {},
+    _item: ReviewItem,
+    _action: ReviewDecisionAction,
+    _extra: { decided_text?: string; candidate_id?: number } = {},
   ) => {
-    try {
-      await createReviewDecision({
-        ...decisionPayload(item, action),
-        ...extra,
-      })
-      if (extra.candidate_id != null) message.success('候选已写入补充知识库')
-      await fetchPage(true)
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '提交审核处置失败')
-    }
+    message.info('审核处置功能暂未实现')
   }
 
   const applyAccept = (item: ReviewItem, candidateId?: number) =>
-    submitDecision(
-      item,
-      'accept',
-      candidateId == null ? {} : { candidate_id: candidateId },
-    )
+    submitDecision(item, 'accept', candidateId == null ? {} : { candidate_id: candidateId })
 
   const applyEdit = (item: ReviewItem, text: string) =>
     submitDecision(item, 'edit', { decided_text: text })
 
   const applySkip = (item: ReviewItem) => submitDecision(item, 'skip')
-
-  const handleCandidateGenerated = (itemKey: string, candidate: ReviewCandidateDto) => {
-    setData((previous) =>
-      previous
-        ? {
-            ...previous,
-            items: previous.items.map((dto) =>
-              dto.item_key === itemKey ? { ...dto, candidate } : dto,
-            ),
-          }
-        : previous,
-    )
-  }
 
   const toggleSelect = (key: string, checked: boolean) => {
     setSelected((previous) => {
@@ -173,43 +136,16 @@ export function ReviewPage() {
     })
   }
 
-  const batchApply = async (action: 'accept' | 'skip') => {
-    const targets = items.filter((item) => selected.has(item.key))
+  const batchApply = async (_action: 'accept' | 'skip') => {
     setSelected(new Set())
-    if (targets.length === 0) return
-    const results = await Promise.allSettled(
-      targets.map((item) =>
-        createReviewDecision({
-          ...decisionPayload(item, action),
-          // 与单条采纳保持一致：已通过校验的 AI 候选随采纳写入补充知识库
-          ...(action === 'accept' && item.candidate?.passed
-            ? { candidate_id: item.candidate.id }
-            : {}),
-        }),
-      ),
-    )
-    const decided = new Set<string>()
-    let failed = 0
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled') decided.add(targets[index].key)
-      else failed += 1
-    })
-    if (failed > 0) message.error(`${failed} 条处置失败`)
-    else message.success(`已${action === 'accept' ? '采纳' : '拒绝'} ${decided.size} 条`)
-    if (decided.size > 0) await fetchPage(true)
+    message.info('审核处置功能暂未实现')
   }
 
   const handleBatchAccept = () => {
     if (selectedCount === 0) return
-    const withCandidate = items.filter(
-      (item) => selected.has(item.key) && item.candidate?.passed,
-    ).length
     Modal.confirm({
       title: `确认采纳已选的 ${selectedCount} 条命令？`,
-      content:
-        withCandidate > 0
-          ? `其中 ${withCandidate} 条带有已通过校验的 AI 候选，将写入补充知识库；采纳结果全部落库并移入审核记录，可在审核记录中撤销。`
-          : '采纳结果将写入数据库，相关条目移入审核记录，可在审核记录中撤销。',
+      content: '采纳结果将写入数据库，相关条目移入审核记录，可在审核记录中撤销。',
       okText: '确认采纳',
       cancelText: '取消',
       onOk: () => batchApply('accept'),
@@ -218,7 +154,7 @@ export function ReviewPage() {
 
   const resetFilters = () => {
     setTargetModel('all')
-    setCode('all')
+    setType('all')
     setPage(1)
   }
 
@@ -337,7 +273,7 @@ export function ReviewPage() {
               {disposed}
             </span>
             <span className="text-[11px] text-ink-400">
-              采纳 {stats.accepted} · 修改 {stats.edited} · 拒绝 {stats.skipped}
+              采纳 {stats.accepted} · 拒绝 {stats.rejected}
             </span>
           </div>
           <span className="ml-auto hidden text-xs text-ink-400 xl:inline">
@@ -347,16 +283,16 @@ export function ReviewPage() {
 
         <ReviewFilterBar
           targetModel={targetModel}
-          code={code}
+          type={type}
           modelOptions={modelOptions}
-          codeOptions={codeOptions}
+          typeOptions={codeOptions}
           filteredCount={total}
           onTargetModelChange={(value) => {
             setTargetModel(value)
             setPage(1)
           }}
-          onCodeChange={(value) => {
-            setCode(value)
+          onTypeChange={(value) => {
+            setType(value as ReviewItemType | 'all')
             setPage(1)
           }}
           onReset={resetFilters}
@@ -371,12 +307,9 @@ export function ReviewPage() {
                   item={item}
                   checked={selected.has(item.key)}
                   onCheck={(checked) => toggleSelect(item.key, checked)}
-                  onAccept={(candidateId) => applyAccept(item, candidateId)}
+                  onAccept={() => applyAccept(item)}
                   onEditAccept={(text) => applyEdit(item, text)}
                   onSkip={() => applySkip(item)}
-                  onCandidateGenerated={(candidate) =>
-                    handleCandidateGenerated(item.key, candidate)
-                  }
                 />
               ))}
         </section>
@@ -397,7 +330,7 @@ export function ReviewPage() {
         />
 
         <footer className="flex flex-col gap-1 text-[10px] text-ink-400 sm:flex-row sm:items-center sm:justify-between">
-          <span>处置结果可追溯，同步至翻译结果与检查点</span>
+          <span>处置按钮仅展示，功能暂未实现</span>
           <span>网络设备知识助手 · 命令审核</span>
         </footer>
       </div>

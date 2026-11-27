@@ -1,43 +1,31 @@
-"""审核条目仓储：review_items 表读写唯一入口。"""
+"""审核条目仓储：review_items 表读写唯一入口。
 
-from sqlalchemy import and_, delete, func, select
+写入按 (user_id, item_hash) 覆盖；status 不在覆盖列中，
+已处置条目的状态以 review_decisions 为唯一事实来源。
+"""
+
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from app.models import (
-    ReviewDecision,
-    ReviewDecisionAction,
-    ReviewItem,
-    SupplementCandidate,
-)
+from app.models import Device, ReviewItem, ReviewItemType, ReviewStatus
 
-# 条目与处置按「用户 + 稳定命令标识」关联
-DECISION_JOIN = and_(
-    ReviewDecision.user_id == ReviewItem.user_id,
-    ReviewDecision.item_key == ReviewItem.item_key,
-)
-
-# 物化覆盖时同步刷新的字段；user_id / item_key 为唯一键不更新
 UPSERT_COLUMNS = (
     "request_id",
-    "line_index",
-    "source_no",
-    "source_vendor",
-    "source_model",
-    "target_vendor",
-    "target_model",
-    "view",
+    "src_dev_id",
+    "dest_dev_id",
     "source_text",
-    "target_text",
     "original_tone",
-    "codes",
-    "code_csv",
-    "severity",
-    "severity_rank",
-    "code_priority",
-    "message",
-    "gap_id",
+    "type",
+    "entities_id",
     "created_at",
+)
+
+# error 优先于 warn 展示
+_TONE_ORDER = case(
+    (ReviewItem.original_tone == "error", 0),
+    (ReviewItem.original_tone == "warn", 1),
+    else_=2,
 )
 
 
@@ -46,7 +34,7 @@ class ReviewItemRepository:
         self.db = db
 
     def upsert_many(self, rows: list[dict]) -> None:
-        """按 (user_id, item_key) 批量覆盖写入，单条 SQL 完成。"""
+        """按 (user_id, item_hash) 批量覆盖写入，单条 SQL 完成。"""
         if not rows:
             return
         stmt = insert(ReviewItem).values(rows)
@@ -56,31 +44,50 @@ class ReviewItemRepository:
         self.db.execute(stmt)
         self.db.commit()
 
-    def delete_all(self) -> None:
-        """重建物化条目时清空（仅用于一次性回填）。"""
-        self.db.execute(delete(ReviewItem))
-        self.db.commit()
+    # ---------------------------- 审核页查询 ----------------------------
+
+    def _conditions(
+        self,
+        *,
+        user_id: int,
+        dest_vendor: str | None,
+        dest_model: str | None,
+        item_type: str | None,
+    ) -> list:
+        source_device = aliased(Device)
+        target_device = aliased(Device)
+        conditions = [
+            ReviewItem.user_id == user_id,
+            ReviewItem.status == ReviewStatus.pending,
+        ]
+        if dest_vendor:
+            conditions.append(ReviewItem.dest_dev_id == target_device.id)
+            conditions.append(target_device.vendor == dest_vendor)
+        if dest_model:
+            conditions.append(ReviewItem.dest_dev_id == target_device.id)
+            conditions.append(target_device.model == dest_model)
+        if item_type:
+            conditions.append(ReviewItem.type == ReviewItemType(item_type))
+        return conditions
 
     def count(
         self,
         *,
         user_id: int,
-        target_vendor: str | None = None,
-        target_model: str | None = None,
-        code: str | None = None,
+        dest_vendor: str | None = None,
+        dest_model: str | None = None,
+        item_type: str | None = None,
     ) -> int:
-        conditions = self._conditions(
-            user_id=user_id,
-            target_vendor=target_vendor,
-            target_model=target_model,
-            code=code,
-        )
         return int(
             self.db.scalar(
                 select(func.count())
                 .select_from(ReviewItem)
-                .outerjoin(ReviewDecision, DECISION_JOIN)
-                .where(*conditions)
+                .where(*self._conditions(
+                    user_id=user_id,
+                    dest_vendor=dest_vendor,
+                    dest_model=dest_model,
+                    item_type=item_type,
+                ))
             )
             or 0
         )
@@ -89,138 +96,71 @@ class ReviewItemRepository:
         self,
         *,
         user_id: int,
-        target_vendor: str | None,
-        target_model: str | None,
-        code: str | None,
+        dest_vendor: str | None,
+        dest_model: str | None,
+        item_type: str | None,
         offset: int,
         limit: int,
-    ) -> list[ReviewItem]:
-        """仅返回待审核条目：已处置的命令不再出现在列表中。"""
-        conditions = self._conditions(
-            user_id=user_id,
-            target_vendor=target_vendor,
-            target_model=target_model,
-            code=code,
-        )
+    ) -> list[tuple[ReviewItem, str, str, str, str]]:
+        """分页读取待审条目，附带源/目标设备厂商与型号。"""
+        source_device = aliased(Device)
+        target_device = aliased(Device)
         stmt = (
-            select(ReviewItem)
-            .outerjoin(ReviewDecision, DECISION_JOIN)
-            .where(*conditions)
-            .order_by(
-                ReviewItem.severity_rank,
-                ReviewItem.code_priority,
-                func.coalesce(ReviewItem.source_no, 0),
-                ReviewItem.id,
+            select(
+                ReviewItem,
+                func.coalesce(source_device.vendor, ""),
+                func.coalesce(source_device.model, ""),
+                func.coalesce(target_device.vendor, ""),
+                func.coalesce(target_device.model, ""),
             )
+            .outerjoin(source_device, ReviewItem.src_dev_id == source_device.id)
+            .outerjoin(target_device, ReviewItem.dest_dev_id == target_device.id)
+            .where(*self._conditions(
+                user_id=user_id,
+                dest_vendor=dest_vendor,
+                dest_model=dest_model,
+                item_type=item_type,
+            ))
+            .order_by(_TONE_ORDER, ReviewItem.type, ReviewItem.id)
             .offset(offset)
             .limit(limit)
         )
-        return list(self.db.scalars(stmt))
+        return list(self.db.execute(stmt).all())
 
-    def stats(self, user_id: int) -> dict[ReviewDecisionAction, int]:
-        """按处置动作统计全部条目，未处置的条目不在结果中。"""
+    def stats(self, user_id: int) -> dict[ReviewStatus, int]:
+        """按处置状态统计全部条目。"""
         stmt = (
-            select(ReviewDecision.action, func.count())
-            .select_from(ReviewItem)
-            .outerjoin(ReviewDecision, DECISION_JOIN)
+            select(ReviewItem.status, func.count())
             .where(ReviewItem.user_id == user_id)
-            .group_by(ReviewDecision.action)
+            .group_by(ReviewItem.status)
         )
-        result: dict[ReviewDecisionAction, int] = {}
-        for action, count in self.db.execute(stmt).all():
-            if action is not None:
-                result[action] = int(count)
-        return result
+        return {status: int(count) for status, count in self.db.execute(stmt).all()}
 
     def list_target_options(self, user_id: int) -> list[tuple[str, str]]:
+        """目的设备筛选项（待审条目涉及的目标设备）。"""
+        target_device = aliased(Device)
         stmt = (
-            select(ReviewItem.target_vendor, ReviewItem.target_model)
-            .where(ReviewItem.user_id == user_id)
-            .distinct()
-            .order_by(ReviewItem.target_vendor, ReviewItem.target_model)
-        )
-        return [(row[0], row[1]) for row in self.db.execute(stmt).all()]
-
-    def list_code_options(self, user_id: int) -> list[str]:
-        stmt = select(ReviewItem.code_csv).where(ReviewItem.user_id == user_id).distinct()
-        codes: set[str] = set()
-        for (code_csv,) in self.db.execute(stmt).all():
-            codes.update(part for part in (code_csv or "").split(",") if part)
-        return sorted(codes)
-
-    def list_decisions_with_items(
-        self, user_id: int
-    ) -> list[tuple[ReviewDecision, ReviewItem]]:
-        """当前用户的全部处置及其来源条目，用于生成检查点快照。"""
-        stmt = (
-            select(ReviewDecision, ReviewItem)
-            .join(ReviewItem, DECISION_JOIN)
-            .where(ReviewDecision.user_id == user_id)
-            .order_by(ReviewItem.request_id, ReviewItem.line_index)
-        )
-        return [(row[0], row[1]) for row in self.db.execute(stmt).all()]
-
-    def count_history(
-        self, *, user_id: int, action: str = "all", keyword: str | None = None
-    ) -> int:
-        conditions = self._history_conditions(user_id=user_id, action=action, keyword=keyword)
-        stmt = (
-            select(func.count())
-            .select_from(ReviewDecision)
-            .join(ReviewItem, DECISION_JOIN)
-            .where(*conditions)
-        )
-        return int(self.db.scalar(stmt) or 0)
-
-    def list_history_page(
-        self,
-        *,
-        user_id: int,
-        action: str,
-        keyword: str | None,
-        offset: int,
-        limit: int,
-    ) -> list[tuple[ReviewDecision, ReviewItem, SupplementCandidate | None]]:
-        """按处置时间倒序读取处置记录，关联条目展示信息与采纳的候选。"""
-        conditions = self._history_conditions(user_id=user_id, action=action, keyword=keyword)
-        stmt = (
-            select(ReviewDecision, ReviewItem, SupplementCandidate)
-            .join(ReviewItem, DECISION_JOIN)
-            .outerjoin(
-                SupplementCandidate, SupplementCandidate.id == ReviewDecision.candidate_id
+            select(target_device.vendor, target_device.model)
+            .select_from(ReviewItem)
+            .outerjoin(target_device, ReviewItem.dest_dev_id == target_device.id)
+            .where(
+                ReviewItem.user_id == user_id,
+                ReviewItem.status == ReviewStatus.pending,
+                target_device.id.is_not(None),
             )
-            .where(*conditions)
-            .order_by(ReviewDecision.updated_at.desc(), ReviewDecision.id.desc())
-            .offset(offset)
-            .limit(limit)
+            .distinct()
+            .order_by(target_device.vendor, target_device.model)
         )
-        return [(row[0], row[1], row[2]) for row in self.db.execute(stmt).all()]
+        return [(row[0], row[1]) for row in self.db.execute(stmt).all()]
 
-    def _history_conditions(
-        self, *, user_id: int, action: str, keyword: str | None
-    ) -> list:
-        conditions = [ReviewDecision.user_id == user_id]
-        if action != "all":
-            conditions.append(ReviewDecision.action == ReviewDecisionAction(action))
-        if keyword:
-            escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            conditions.append(ReviewItem.source_text.like(f"%{escaped}%", escape="\\"))
-        return conditions
-
-    def _conditions(
-        self,
-        *,
-        user_id: int,
-        target_vendor: str | None,
-        target_model: str | None,
-        code: str | None,
-    ) -> list:
-        # 审核列表只展示待审核条目，已处置的通过审核记录撤销后回到列表
-        conditions = [ReviewItem.user_id == user_id, ReviewDecision.id.is_(None)]
-        if target_vendor:
-            conditions.append(ReviewItem.target_vendor == target_vendor)
-        if target_model:
-            conditions.append(ReviewItem.target_model == target_model)
-        if code:
-            conditions.append(func.find_in_set(code, ReviewItem.code_csv) > 0)
-        return conditions
+    def list_type_options(self, user_id: int) -> list[str]:
+        stmt = (
+            select(ReviewItem.type)
+            .where(
+                ReviewItem.user_id == user_id,
+                ReviewItem.status == ReviewStatus.pending,
+            )
+            .distinct()
+            .order_by(ReviewItem.type)
+        )
+        return [row[0].value for row in self.db.execute(stmt).all()]

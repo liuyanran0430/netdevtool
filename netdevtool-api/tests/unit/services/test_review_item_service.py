@@ -1,147 +1,145 @@
-"""审核条目物化：告警筛选、稳定键去重与来源视图。"""
+"""审核条目物化：未识别段聚合与目标侧实体段写入。"""
 
-from datetime import datetime
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
 import pytest
 
-from app.models import Device, DeviceType, TranslationTask, TranslationTaskStatus
-from app.repositories.knowledge_gap_repository import KnowledgeGapRepository
+from app.models import ReviewItemType, ReviewStatus
 from app.repositories.review_item_repository import ReviewItemRepository
 from app.schemas import (
+    TranslationEntityInfo,
     TranslationResult,
     TranslationResultLines,
     TranslationResultSummary,
     TranslationWarning,
 )
 from app.services import review_item_service
+from app.translate_rule.parser import ParsedLine
 
 
-def review_task() -> TranslationTask:
-    return TranslationTask(
-        id=1,
-        user_id=1,
-        request_id="req-review",
-        status=TranslationTaskStatus.succeeded,
-        source_vendor="华为",
-        source_model="S5735",
-        target_vendor="H3C",
-        target_model="S6520",
-        source_text=(
-            "interface GE0/0/1\n"
-            "unknown action 10\n"
-            "unknown action 20\n"
-            "display current-configuration"
-        ),
-        created_at=datetime.now(),
+def repository(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    repo = MagicMock(spec=ReviewItemRepository)
+    monkeypatch.setattr(review_item_service, "ReviewItemRepository", lambda db: repo)
+    return repo
+
+
+def make_task(user_id: int | None = 1) -> MagicMock:
+    task = MagicMock()
+    task.user_id = user_id
+    task.request_id = "req-1"
+    task.created_at = None
+    task.source_text = "\n".join(
+        [
+            "interface GE0/0/1",
+            "unknown action 10",
+            "unknown action 20",
+            "#",
+            "ospf 100",
+            "quit",
+            "unknown action 30",
+        ]
     )
+    return task
 
 
-def source_device() -> Device:
-    return Device(
-        id=1,
-        vendor="华为",
-        vendor_en="huawei",
-        model="S5735",
-        device_type=DeviceType.switch,
-    )
-
-
-def review_result() -> TranslationResult:
+def make_result(**warnings: list[TranslationWarning]) -> TranslationResult:
     return TranslationResult(
         lines=[
-            TranslationResultLines(text="system-view", tone="muted"),
-            TranslationResultLines(text="unknown action 10",
-                tone="error",
-            ),
-            TranslationResultLines(text="unknown action 20",
-                tone="error",
-            ),
-            TranslationResultLines(text="show current-configuration",
-                tone="warn",
-            ),
+            TranslationResultLines(text="interface ...", tone="success"),
+            TranslationResultLines(text="ospf ...", tone="warn"),
         ],
+        line_source_nos=[1, 5],
+        entities=[
+            TranslationEntityInfo(id="ospf", source_nos=[5], target_line_indices=[1])
+        ],
+        warnings=warnings.get("warnings", []),
+        summary=TranslationResultSummary(total=2, duration_ms=0),
+    )
+
+
+def make_parsed() -> list[ParsedLine]:
+    return [
+        ParsedLine(no=1, text="interface GE0/0/1", kind="command"),
+        ParsedLine(no=2, text="unknown action 10", kind="other"),
+        ParsedLine(no=3, text="unknown action 20", kind="other"),
+        ParsedLine(no=4, text="#", kind="comment"),
+        ParsedLine(no=5, text="ospf 100", kind="command"),
+        ParsedLine(no=6, text="quit", kind="view"),
+        ParsedLine(no=7, text="unknown action 30", kind="other"),
+    ]
+
+
+def test_materialize_unknown_segments_split_by_comment_and_view(
+    db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repository(monkeypatch)
+
+    count = review_item_service.materialize_task_items(
+        db, make_task(), make_result(), make_parsed()
+    )
+
+    # 段：[2,3]、[7]，无实体告警
+    assert count == 2
+    first, second = repo.upsert_many.call_args.args[0]
+    assert first["source_text"] == ["unknown action 10", "unknown action 20"]
+    assert first["type"] == ReviewItemType.unknown_source
+    assert first["entities_id"] is None
+    assert first["status"] == ReviewStatus.pending
+    assert second["source_text"] == ["unknown action 30"]
+
+
+def test_materialize_entity_segment_from_target_warning(
+    db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = repository(monkeypatch)
+    result = make_result(
         warnings=[
             TranslationWarning(
-                no=[2],
-                message="未识别 10",
-                code="unknown_command",
-                severity="error",
+                entity_id="ospf", no=[5], message="目标无实现", code="unsupported_entity"
             ),
-            TranslationWarning(
-                no=[3],
-                message="未识别 20",
-                code="unknown_command",
-                severity="error",
-            ),
-            TranslationWarning(
-                no=[4],
-                message="显示命令已转换",
-                code="display_command",
-                severity="warn",
-            ),
-        ],
-        summary=TranslationResultSummary(total=4, duration_ms=0),
+        ]
     )
 
+    count = review_item_service.materialize_task_items(
+        db, make_task(), result, make_parsed()
+    )
 
-def test_materialize_deduplicates_stable_commands_and_excludes_display_warnings(
+    # 两个未识别段 + 实体段一条
+    assert count == 3
+    rows = repo.upsert_many.call_args.args[0]
+    entity_rows = [row for row in rows if row["entities_id"] == ["ospf"]]
+    assert len(entity_rows) == 1
+    assert entity_rows[0]["type"] == ReviewItemType.missing_target_impl
+    assert entity_rows[0]["source_text"] == ["ospf 100"]
+
+
+def test_materialize_dedupes_by_item_hash_within_task(
     db: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        KnowledgeGapRepository, "list_by_scope", lambda self, **kwargs: []
-    )
-    upsert_many = Mock()
-    monkeypatch.setattr(ReviewItemRepository, "upsert_many", upsert_many)
+    repo = repository(monkeypatch)
+    task = make_task()
+    task.source_text = "\n".join(["unknown action 10", "unknown action 10"])
+    parsed = [
+        ParsedLine(no=1, text="unknown action 10", kind="other"),
+        ParsedLine(no=2, text="unknown action 10", kind="other"),
+    ]
 
-    written = review_item_service.materialize_task_items(
-        db, review_task(), review_result(), source_device=source_device()
-    )
+    count = review_item_service.materialize_task_items(db, task, make_result(), parsed)
 
-    assert written == 1
-    rows = upsert_many.call_args.args[1] if len(upsert_many.call_args.args) > 1 else None
-    if rows is None:
-        # 仓储以实例方法调用，第一个位置参数是 self，第二个才是 rows。
-        rows = upsert_many.call_args.args[0]
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["source_text"] == "unknown action 10"
-    assert row["view"] == "interface"
-    assert row["codes"] == ["unknown_command"]
-    assert row["severity"] == "error"
-    assert row["line_index"] == 2
+    # 同文本同段去重为一条
+    assert count == 1
+    row = repo.upsert_many.call_args.args[0][0]
+    assert row["source_text"] == ["unknown action 10", "unknown action 10"]
 
 
-def test_materialize_is_safe_to_repeat_for_same_task(
+def test_materialize_skips_task_without_user(
     db: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        KnowledgeGapRepository, "list_by_scope", lambda self, **kwargs: []
-    )
-    upsert_many = Mock()
-    monkeypatch.setattr(ReviewItemRepository, "upsert_many", upsert_many)
-    task = review_task()
-    result = review_result()
+    repo = repository(monkeypatch)
 
-    first = review_item_service.materialize_task_items(
-        db, task, result, source_device=source_device()
-    )
-    second = review_item_service.materialize_task_items(
-        db, task, result, source_device=source_device()
+    count = review_item_service.materialize_task_items(
+        db, make_task(user_id=None), make_result(), make_parsed()
     )
 
-    assert (first, second) == (1, 1)
-    assert upsert_many.call_count == 2
-    first_rows = upsert_many.call_args_list[0].args[-1]
-    second_rows = upsert_many.call_args_list[1].args[-1]
-    assert first_rows[0]["item_key"] == second_rows[0]["item_key"]
-
-
-def test_materialize_ignores_anonymous_or_empty_results(db: MagicMock) -> None:
-    anonymous = review_task()
-    anonymous.user_id = None
-    empty = review_task()
-    empty.result_json = None
-
-    assert review_item_service.materialize_task_items(db, anonymous) == 0
-    assert review_item_service.materialize_task_items(db, empty) == 0
+    assert count == 0
+    repo.upsert_many.assert_not_called()

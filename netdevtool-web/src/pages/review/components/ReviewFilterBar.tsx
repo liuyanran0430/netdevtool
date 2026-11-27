@@ -1,4 +1,5 @@
 import { WARNING_LABELS } from '../deriveItems'
+import type { ReviewItemType } from '../../../api/review'
 
 interface ModelOption {
   value: string
@@ -7,12 +8,12 @@ interface ModelOption {
 
 interface ReviewFilterBarProps {
   targetModel: string
-  code: string
+  type: ReviewItemType | 'all'
   modelOptions: ModelOption[]
-  codeOptions: string[]
+  typeOptions: ReviewItemType[]
   filteredCount: number
   onTargetModelChange: (value: string) => void
-  onCodeChange: (value: string) => void
+  onTypeChange: (value: ReviewItemType | 'all') => void
   onReset: () => void
 }
 
@@ -21,36 +22,41 @@ const selectClass =
 
 export function ReviewFilterBar({
   targetModel,
-  code,
+  type,
   modelOptions,
-  codeOptions,
+  typeOptions,
   filteredCount,
   onTargetModelChange,
-  onCodeChange,
+  onTypeChange,
   onReset,
 }: ReviewFilterBarProps) {
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-line bg-white px-4 py-2.5 xl:h-[54px] xl:flex-row xl:items-center">
-      <span className="text-[13px] text-ink-500">筛选</span>
       <div className="flex flex-wrap items-center gap-3">
+        <span className="text-[13px] text-ink-500">目的型号：</span>
         <select
           className={selectClass}
           value={targetModel}
           onChange={(event) => onTargetModelChange(event.target.value)}
         >
-          <option value="all">目的型号：全部</option>
+          <option value="all">全部</option>
           {modelOptions.map((item) => (
             <option key={item.value} value={item.value}>
-              目的型号：{item.label}
+              {item.label}
             </option>
           ))}
         </select>
 
-        <select className={selectClass} value={code} onChange={(event) => onCodeChange(event.target.value)}>
-          <option value="all">类型：全部</option>
-          {codeOptions.map((item) => (
+        <span className="text-[13px] text-ink-500">类型：</span>
+        <select
+          className={selectClass}
+          value={type}
+          onChange={(event) => onTypeChange(event.target.value as ReviewItemType | 'all')}
+        >
+          <option value="all">全部</option>
+          {typeOptions.map((item) => (
             <option key={item} value={item}>
-              类型：{WARNING_LABELS[item] ?? item}
+              {WARNING_LABELS[item] ?? item}
             </option>
           ))}
         </select>

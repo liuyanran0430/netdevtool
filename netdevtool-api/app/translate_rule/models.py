@@ -191,7 +191,6 @@ class Implementation(BaseModel):
     os: str | None = None
     applies_to: AppliesTo | None = None
     supported: bool = True
-    confidence: str = "medium"
     pre_commands: list[str | PreCommand] = Field(default_factory=list)
     segments: list[SegmentSpec] = Field(default_factory=list)
     param_formats: dict[str, str] = Field(default_factory=dict)
@@ -367,7 +366,6 @@ class SupplementEntry(BaseModel):
     source: SupplementSource
     target: SupplementTarget
     origin: str = "llm"
-    confidence: str = "low"
     verified: bool = False
     accepted_by: str | None = None
     accepted_at: str | None = None

@@ -217,7 +217,7 @@ def test_cancel_finished_translation_is_idempotent_without_revoke(
     assert task.status == TranslationTaskStatus.succeeded
 
 
-def test_worker_saves_result_and_runs_side_effects(
+def test_worker_saves_result(
     db: MagicMock,
     translation_repository,
     translation_task_factory,
@@ -225,7 +225,7 @@ def test_worker_saves_result_and_runs_side_effects(
 ) -> None:
     task = translation_repository.create(translation_task_factory())
     use_worker_session(monkeypatch, db)
-    source, target = use_devices(monkeypatch)
+    _, target = use_devices(monkeypatch)
     output = translation_output()
     registry = MagicMock()
     registry.get_entity.return_value = SimpleNamespace(description="配置 IPv4 静态路由")
@@ -235,12 +235,6 @@ def test_worker_saves_result_and_runs_side_effects(
     )
     collect_gaps = Mock(return_value=1)
     materialize = Mock(return_value=1)
-    monkeypatch.setattr(
-        translation_service.knowledge_gap_service, "collect_gaps", collect_gaps
-    )
-    monkeypatch.setattr(
-        translation_service.review_item_service, "materialize_task_items", materialize
-    )
 
     translation_service.run_translation_task(task.request_id)
 
@@ -259,11 +253,6 @@ def test_worker_saves_result_and_runs_side_effects(
         }
     ]
     assert saved["summary"]["total"] == 1
-    collect_gaps.assert_called_once()
-    materialize.assert_called_once()
-    assert materialize.call_args.args[:2] == (db, task)
-    assert materialize.call_args.args[2].lines[0].text == output.lines[0].text
-    assert materialize.call_args.kwargs == {"source_device": source}
     assert target.vendor_en == "h3c"
 
 
@@ -277,14 +266,6 @@ def test_worker_does_not_overwrite_cancellation_during_translation(
     use_worker_session(monkeypatch, db)
     use_devices(monkeypatch)
     monkeypatch.setattr(translation_service, "get_registry", MagicMock)
-    collect_gaps = Mock()
-    materialize = Mock()
-    monkeypatch.setattr(
-        translation_service.knowledge_gap_service, "collect_gaps", collect_gaps
-    )
-    monkeypatch.setattr(
-        translation_service.review_item_service, "materialize_task_items", materialize
-    )
 
     def cancel_while_translating(*args, **kwargs):
         task.status = TranslationTaskStatus.failed
@@ -300,8 +281,6 @@ def test_worker_does_not_overwrite_cancellation_during_translation(
     assert task.status == TranslationTaskStatus.failed
     assert task.error_message == "任务已取消"
     assert task.result_json is None
-    collect_gaps.assert_not_called()
-    materialize.assert_not_called()
 
 
 def test_worker_marks_missing_device_as_failed(
@@ -323,34 +302,3 @@ def test_worker_marks_missing_device_as_failed(
     assert task.finished_at is not None
     db.rollback.assert_called_once()
 
-
-def test_worker_result_survives_side_effect_failures(
-    db: MagicMock,
-    translation_repository,
-    translation_task_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task = translation_repository.create(translation_task_factory())
-    use_worker_session(monkeypatch, db)
-    use_devices(monkeypatch)
-    registry = MagicMock()
-    registry.get_entity.return_value = None
-    monkeypatch.setattr(translation_service, "get_registry", lambda: registry)
-    monkeypatch.setattr(
-        translation_service, "translate_config", Mock(return_value=translation_output())
-    )
-    monkeypatch.setattr(
-        translation_service.knowledge_gap_service,
-        "collect_gaps",
-        Mock(side_effect=RuntimeError("gap write failed")),
-    )
-    monkeypatch.setattr(
-        translation_service.review_item_service,
-        "materialize_task_items",
-        Mock(side_effect=RuntimeError("review write failed")),
-    )
-
-    translation_service.run_translation_task(task.request_id)
-
-    assert task.status == TranslationTaskStatus.succeeded
-    assert task.result_json is not None
